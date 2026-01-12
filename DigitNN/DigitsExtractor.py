@@ -293,8 +293,10 @@ background_mean=0):
         borderType=cv2.BORDER_CONSTANT,
         value=0  # Black padding
     )
+
+    digit9 = digit8 #cv2.resize(digit8, (28, 28), interpolation=cv2.INTER_CUBIC)
     
-    return digit8
+    return digit9
 
 
 def process_image(input_path, output_dir=None, 

@@ -40,7 +40,7 @@ def create_digit_classifier_model(use_240k_samples=False, use_deep_model=True):
     if use_240k_samples:
         # Larger model for MNIST + EMNIST (more training data)
         number_convolution_channels = 32
-        neurons_in_dense_layer = 32
+        neurons_in_dense_layer = 64
     else:
         # Smaller model for MNIST only
         number_convolution_channels = 32
@@ -112,24 +112,9 @@ def create_augmentation_pipeline(stats_tracker=None):
     # Create individual transforms - all can apply together for realistic combinations
     transforms = []
     
-    # 1. Rotation OR Slant (mutually exclusive) - no shift, no scale
-    # Rotation: rotates entire digit (like tilting paper)
-    # Slant: vertical shear for forward/backward tilt
-    # These are mutually exclusive since they both affect orientation
-    # Note: For MNIST/EMNIST, we do NOT apply scale or position/translation transforms
-    #       since digits are already centered and normalized in 28x28 images.
-    #       Affine transform defaults to no scale/translate when not specified.
-    transforms.append(A.OneOf([
-        A.Affine(
-            rotate_limit=48,      # 48 degrees max rotation (no scale, no translate)
-            p=1.0
-        ),
-        A.Affine(
-            shear={'x': 0, 'y': (-15, 15)},  # Vertical shear for forward/backward tilt (±15 degrees)
-            # No scale or translate parameters - defaults to no scaling/translation
-            p=1.0
-        )
-    ], p=0.8))  # 80% chance of getting either rotation OR slant
+    # Note: Rotation and Slant (shear) are now applied separately in ImageDataGeneratorWithAugmentation
+    # Each augmented sample produces 2 images: one rotated, one sheared
+    # This pipeline now only handles blur and noise (rotation/shear moved to generator)
     
     # 2. Image quality issues - can occur together (realistic for poor scans/photos)
     transforms.append(A.GaussianBlur(blur_limit=(1, 3), p=0.3))  # Light blur
@@ -146,15 +131,21 @@ def create_augmentation_pipeline(stats_tracker=None):
 class ImageDataGeneratorWithAugmentation:
     """
     Custom data generator that applies albumentations augmentations to data.
+    For augmented samples: each produces 2 images (one rotated, one sheared).
     """
     def __init__(self, augmentation_pipeline, batch_size=64):
-        self.augmentation_pipeline = augmentation_pipeline
+        self.augmentation_pipeline = augmentation_pipeline  # Kept for blur/noise if needed
         self.batch_size = batch_size
+        # Create separate transforms for rotation and shear
+        self.rotation_transform = A.Affine(rotate_limit=48, p=1.0)
+        self.shear_transform = A.Affine(shear={'x': 0, 'y': (-15, 15)}, p=1.0)
         # Statistics tracking
         self.stats = {
             'total_samples': 0,
-            'augmented_samples': 0,
+            'augmented_samples': 0,  # Counts base samples selected for augmentation
             'original_samples': 0,
+            'rotation_samples': 0,  # Counts rotation images created
+            'shearing_samples': 0,  # Counts shear images created
             'morphology_thicker': 0,
             'morphology_thinner': 0,
         }
@@ -180,7 +171,9 @@ class ImageDataGeneratorWithAugmentation:
                 
                 # Process each image in the batch
                 batch_x_aug = []
-                for img in batch_x:
+                batch_y_aug = []
+                
+                for img, label in zip(batch_x, batch_y):
                     self.stats['total_samples'] += 1
                     
                     # Convert from (28, 28, 1) to (28, 28) for albumentations
@@ -189,51 +182,66 @@ class ImageDataGeneratorWithAugmentation:
                     # Convert from float [0,1] to uint8 [0,255] for albumentations
                     img_uint8 = (img_2d * 255).astype(np.uint8)
                     
-                    # Apply augmentation to 50% of samples (reduce augmented samples by 50%)
-                    # All original samples are used, but only 50% get augmented
+                    # Apply augmentation to 50% of samples
+                    # Each augmented sample produces 2 images: one rotated, one sheared
                     if np.random.random() < 0.5:
-                        # Apply augmentation (albumentations expects dict with 'image' key)
-                        # Note: All augmentations can apply to the same image simultaneously
-                        # based on their individual probabilities
                         self.stats['augmented_samples'] += 1
-                        augmented = self.augmentation_pipeline(image=img_uint8)
-                        img_aug = augmented['image']
                         
-                        # Apply stroke thickness variation using morphological operations
-                        # For WHITE digits on BLACK background:
-                        # - dilate() makes bright regions (digits) THICKER
-                        # - erode() makes bright regions (digits) THINNER
+                        # Create rotated version
+                        rotated = self.rotation_transform(image=img_uint8)
+                        img_rotated = rotated['image']
+                        self.stats['rotation_samples'] += 1
+                        
+                        # Apply stroke thickness variation to rotated image (optional)
                         if np.random.random() < 0.5:
                             kernel_size = np.random.choice([1, 2])
                             if np.random.random() < 0.5:
-                                # Thicker strokes: dilate the white digits
                                 self.stats['morphology_thicker'] += 1
                                 kernel = np.ones((kernel_size, kernel_size), np.uint8)
-                                img_aug = cv2.dilate(img_aug, kernel, iterations=1)
-                            #else:
-                                # Thinner strokes: erode the white digits
-                                #self.stats['morphology_thinner'] += 1
-                                #kernel = np.ones((kernel_size, kernel_size), np.uint8)
-                                #img_aug = cv2.erode(img_aug, kernel, iterations=1)
+                                img_rotated = cv2.dilate(img_rotated, kernel, iterations=1)
+                        
+                        # Convert rotated image back to float [0,1]
+                        img_rotated_float = (img_rotated.astype(np.float32) / 255.0)
+                        img_rotated_float = np.expand_dims(img_rotated_float, axis=-1)
+                        img_rotated_float = np.clip(img_rotated_float, 0.0, 1.0)
+                        batch_x_aug.append(img_rotated_float)
+                        batch_y_aug.append(label)
+                        
+                        # Create sheared version
+                        sheared = self.shear_transform(image=img_uint8)
+                        img_sheared = sheared['image']
+                        self.stats['shearing_samples'] += 1
+                        
+                        # Apply stroke thickness variation to sheared image (optional)
+                        if np.random.random() < 0.5:
+                            kernel_size = np.random.choice([1, 2])
+                            if np.random.random() < 0.5:
+                                self.stats['morphology_thicker'] += 1
+                                kernel = np.ones((kernel_size, kernel_size), np.uint8)
+                                img_sheared = cv2.dilate(img_sheared, kernel, iterations=1)
+                        
+                        # Convert sheared image back to float [0,1]
+                        img_sheared_float = (img_sheared.astype(np.float32) / 255.0)
+                        img_sheared_float = np.expand_dims(img_sheared_float, axis=-1)
+                        img_sheared_float = np.clip(img_sheared_float, 0.0, 1.0)
+                        batch_x_aug.append(img_sheared_float)
+                        batch_y_aug.append(label)
                     else:
                         # Keep original image (no augmentation) - 50% of samples remain original
                         self.stats['original_samples'] += 1
                         img_aug = img_uint8
-                    
-                    # Convert back to float [0,1]
-                    img_aug_float = (img_aug.astype(np.float32) / 255.0)
-                    
-                    # Reshape to (28, 28, 1)
-                    img_aug_float = np.expand_dims(img_aug_float, axis=-1)
-                    
-                    # Ensure values are in [0, 1] range
-                    img_aug_float = np.clip(img_aug_float, 0.0, 1.0)
-                    
-                    batch_x_aug.append(img_aug_float)
+                        
+                        # Convert back to float [0,1]
+                        img_aug_float = (img_aug.astype(np.float32) / 255.0)
+                        img_aug_float = np.expand_dims(img_aug_float, axis=-1)
+                        img_aug_float = np.clip(img_aug_float, 0.0, 1.0)
+                        batch_x_aug.append(img_aug_float)
+                        batch_y_aug.append(label)
                 
                 batch_x_aug = np.array(batch_x_aug)
+                batch_y_aug = np.array(batch_y_aug)
                 
-                yield batch_x_aug, batch_y
+                yield batch_x_aug, batch_y_aug
 
 
 class AugmentationStatsCallback(keras.callbacks.Callback):
@@ -247,22 +255,31 @@ class AugmentationStatsCallback(keras.callbacks.Callback):
         self.last_total = 0
         self.last_augmented = 0
         self.last_original = 0
+        self.last_rotation = 0
+        self.last_shearing = 0
     
     def on_epoch_end(self, epoch, logs=None):
         stats = self.datagen.stats
         current_total = stats['total_samples']
         current_augmented = stats['augmented_samples']
         current_original = stats['original_samples']
+        current_rotation = stats['rotation_samples']
+        current_shearing = stats['shearing_samples']
         
         samples_this_epoch = current_total - self.last_total
         augmented_this_epoch = current_augmented - self.last_augmented
         original_this_epoch = current_original - self.last_original
+        rotation_this_epoch = current_rotation - self.last_rotation
+        shearing_this_epoch = current_shearing - self.last_shearing
         
         self.last_total = current_total
         self.last_augmented = current_augmented
         self.last_original = current_original
+        self.last_rotation = current_rotation
+        self.last_shearing = current_shearing
         
-        print(f"\n[Epoch {epoch+1}] Samples processed: {samples_this_epoch} (Augmented: {augmented_this_epoch}, Original: {original_this_epoch})")
+        print(f"\n[Epoch {epoch+1}] Base samples processed: {samples_this_epoch} (Augmented: {augmented_this_epoch}, Original: {original_this_epoch})")
+        print(f"  Images created: Rotation: {rotation_this_epoch}, Shearing: {shearing_this_epoch}, Original: {original_this_epoch}")
 
 
 def load_and_combine_datasets(use_mnist=True, use_emnist=True):
@@ -448,19 +465,17 @@ num_epochs=20, use_deep_model=True):
             print("\n" + "="*60)
             print("Augmentation Configuration:")
             print("="*60)
-            print("All augmentations can apply to the SAME image simultaneously")
-            print("(Based on their individual probabilities)")
-            print("\nAugmentation probabilities:")
-            print("  50% of samples will be augmented, 50% will remain original")
-            print("  Rotation OR Slant (mutually exclusive): 80% (p=0.8) of augmented samples")
+            print("50% of samples will be augmented, 50% will remain original")
+            print("Each augmented sample produces 2 images: one rotated, one sheared")
+            print("\nAugmentation details:")
+            print("  Rotation AND Shearing: 100% of augmented samples (each produces 2 images)")
             print("    - Rotation: ±48° rotation (no shift, no scale)")
-            print("    - Slant: ±15° vertical shear (no shift, no scale)")
-            print("  GaussianBlur (image quality): 30% (p=0.3) of augmented samples")
-            print("  GaussNoise (image quality): 20% (p=0.2) of augmented samples")
-            print("  Morphology - Stroke thickness variation: 50% (p=0.5) of augmented samples")
+            print("    - Shearing: ±15° vertical shear (no shift, no scale)")
+            print("  Morphology - Stroke thickness variation: 50% (p=0.5) applied to each augmented image")
             print("\nNote: Augmentation is applied on-the-fly - each sample is augmented differently each epoch")
-            print(f"Total samples processed over {num_epochs} epochs: ~{len(x_train) * num_epochs}")
-            print(f"(~{int(len(x_train) * num_epochs * 0.5)} augmented, ~{int(len(x_train) * num_epochs * 0.5)} original)")
+            total_images_per_epoch = int(len(x_train) * 0.5 * 2) + int(len(x_train) * 0.5)  # augmented*2 + original
+            print(f"Total images processed over {num_epochs} epochs: ~{total_images_per_epoch * num_epochs}")
+            print(f"(~{int(len(x_train) * num_epochs * 0.5 * 2)} from augmented [each producing 2], ~{int(len(x_train) * num_epochs * 0.5)} original)")
             print("(Each sample is augmented uniquely each time it's seen)")
             print("="*60 + "\n")
             
@@ -493,18 +508,24 @@ num_epochs=20, use_deep_model=True):
             stats = train_datagen.stats
             total = stats['total_samples']
             if total > 0:
-                print(f"Total samples processed across all epochs: {total}")
-                print(f"Average samples per epoch: {total / num_epochs:.0f}")
-                print(f"\nAugmentation breakdown:")
-                print(f"  Augmented samples: {stats['augmented_samples']}/{total} ({stats['augmented_samples']/total*100:.1f}%)")
-                print(f"  Original samples: {stats['original_samples']}/{total} ({stats['original_samples']/total*100:.1f}%)")
-                print(f"\nMorphology augmentation application rates (within augmented samples):")
+                print(f"Total base samples processed across all epochs: {total}")
+                print(f"Average base samples per epoch: {total / num_epochs:.0f}")
+                total_images = stats['rotation_samples'] + stats['shearing_samples'] + stats['original_samples']
+                print(f"Total images created across all epochs: {total_images}")
+                print(f"Average images per epoch: {total_images / num_epochs:.0f}")
+                print(f"\nBase sample breakdown:")
+                print(f"  Augmented base samples: {stats['augmented_samples']}/{total} ({stats['augmented_samples']/total*100:.1f}%)")
+                print(f"  Original base samples: {stats['original_samples']}/{total} ({stats['original_samples']/total*100:.1f}%)")
+                print(f"\nImage creation breakdown:")
+                print(f"  Rotation images: {stats['rotation_samples']}/{total_images} ({stats['rotation_samples']/total_images*100:.1f}% of images)")
+                print(f"  Shearing images: {stats['shearing_samples']}/{total_images} ({stats['shearing_samples']/total_images*100:.1f}% of images)")
+                print(f"  Original images: {stats['original_samples']}/{total_images} ({stats['original_samples']/total_images*100:.1f}% of images)")
+                print(f"\nMorphology augmentation application:")
                 if stats['augmented_samples'] > 0:
-                    print(f"  Morphology - Thicker strokes: {stats['morphology_thicker']}/{stats['augmented_samples']} ({stats['morphology_thicker']/stats['augmented_samples']*100:.1f}% of augmented)")
-                    print(f"  Morphology - Thinner strokes: {stats['morphology_thinner']}/{stats['augmented_samples']} ({stats['morphology_thinner']/stats['augmented_samples']*100:.1f}% of augmented)")
-                print(f"\nNote: All augmentations (Rotation/Slant, GaussianBlur, GaussNoise, Morphology)")
-                print(f"      can apply to the same image simultaneously based on their individual probabilities.")
-                print(f"      (Morphology stats are tracked manually; other augmentations are handled by albumentations)")
+                    total_aug_images = stats['rotation_samples'] + stats['shearing_samples']
+                    print(f"  Morphology - Thicker strokes: {stats['morphology_thicker']}/{total_aug_images} ({stats['morphology_thicker']/total_aug_images*100:.1f}% of augmented images)")
+                print(f"\nNote: Each augmented base sample produces 2 images (one rotated, one sheared).")
+                print(f"      Morphology stats are tracked manually.")
             print("="*60)
         else:
             # Train the model without augmentation
