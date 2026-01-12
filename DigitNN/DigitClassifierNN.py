@@ -44,7 +44,7 @@ def create_digit_classifier_model(use_240k_samples=False, use_deep_model=True):
     else:
         # Smaller model for MNIST only
         number_convolution_channels = 64
-        neurons_in_dense_layer = 64
+        neurons_in_dense_layer = 128
         
     if use_deep_model:
         model = keras.Sequential([

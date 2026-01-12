@@ -294,9 +294,17 @@ background_mean=0):
         value=0  # Black padding
     )
 
-    digit9 = digit8 #cv2.resize(digit8, (28, 28), interpolation=cv2.INTER_CUBIC)
+    digit9 = cv2.resize(digit8, (28, 28), interpolation=cv2.INTER_CUBIC)
+
+    #digit10 = cv2.adaptiveThreshold(digit9, 255, 
+    #cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 5)
+
+    # Very light noise removal - only remove tiny isolated pixels (only for binary)
+    #kernel = np.ones((1, 1), np.uint8)  # Minimal kernel
+    #digit11 = cv2.morphologyEx(digit10, cv2.MORPH_OPEN, kernel, iterations=1)
+    digit11 = digit9
     
-    return digit9
+    return digit11
 
 
 def process_image(input_path, output_dir=None, 
