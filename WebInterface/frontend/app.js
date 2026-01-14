@@ -62,8 +62,8 @@ function handleFileSelect(event) {
     }
     
     // Check file type
-    if (!file.type.match(/^image\/(jpeg|jpg)$/)) {
-        showError('Please select a JPEG image file.');
+    if (!file.type.match(/^image\/(jpeg|jpg|png)$/)) {
+        showError('Please select a JPEG or PNG image file.');
         fileInput.value = '';
         selectedFile = null;
         fileInfo.textContent = '';

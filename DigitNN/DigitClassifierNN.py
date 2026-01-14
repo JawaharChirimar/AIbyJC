@@ -137,7 +137,7 @@ class ImageDataGeneratorWithAugmentation:
         self.augmentation_pipeline = augmentation_pipeline  # Kept for blur/noise if needed
         self.batch_size = batch_size
         # Create separate transforms for rotation and shear
-        self.rotation_transform = A.Affine(rotate_limit=48, p=1.0)
+        self.rotation_transform = A.Affine(rotate=(-48, 48), p=1.0)
         self.shear_transform = A.Affine(shear={'x': 0, 'y': (-15, 15)}, p=1.0)
         # Statistics tracking
         self.stats = {
