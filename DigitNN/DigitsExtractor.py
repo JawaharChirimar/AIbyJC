@@ -92,18 +92,52 @@ def sort_detections_by_reading_order(detections, image_height, line_threshold=0.
     return result
 
 
+def get_foreground_mask(image):
+    """
+    Create binary mask with foreground=255, background=0.
+    
+    Constraint: foreground must be < 50% of image area.
+    
+    Raises:
+        ValueError: If foreground/background cannot be determined.
+    """
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+    
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    white_ratio = np.mean(binary) / 255
+    
+    # Clear cases
+    if white_ratio > 0.5:
+        binary = cv2.bitwise_not(binary)
+        white_ratio = 1 - white_ratio
+    
+    # Ambiguous case - too close to 50%
+    if white_ratio > 0.45:
+        raise ValueError(
+            f"Cannot determine foreground/background. "
+            f"Foreground ratio: {white_ratio:.1%}. "
+            f"Ensure text covers < 50% of image."
+        )
+    
+    return binary
+
+
 def detect_background_color_contours(image):
     """
-    Determine background color using contour-based detection.
+    Determine background and foreground colors using contour-based detection.
     
-    Finds foreground objects (digits) using contours, then samples pixels
-    outside those contours to determine background color.
+    Finds foreground objects (digits) using get_foreground_mask, then samples pixels
+    to determine background and foreground colors.
     
     Args:
         image: Input image (BGR format from cv2)
     
     Returns:
-        bool: True if background is white (>127), False if black (<=127)
+        tuple: (background_mean, foreground_mean) - mean pixel values
     """
     # Convert to greyscale
     if len(image.shape) == 3:
@@ -111,16 +145,8 @@ def detect_background_color_contours(image):
     else:
         gray = image.copy()
     
-    # Apply thresholding to find foreground objects (digits)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    
-    # Find contours (foreground objects)
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Create mask: foreground = 255, background = 0
-    h, w = gray.shape
-    foreground_mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.drawContours(foreground_mask, contours, -1, 255, -1)  # Fill contours
+    # Get foreground mask (foreground=255, background=0)
+    foreground_mask = get_foreground_mask(image)
     
     # Background mask = inverse of foreground mask
     background_mask = 255 - foreground_mask
@@ -129,16 +155,28 @@ def detect_background_color_contours(image):
     background_pixels = gray[background_mask > 0]
     
     if len(background_pixels) == 0:
-        # No background pixels found, fall back to whole image mean
-        mean_val = np.mean(gray)
-        return mean_val > 127
+        # This should never happen if get_foreground_mask succeeded
+        # (foreground < 50% means background > 50%)
+        raise ValueError(
+            "No background pixels found. This indicates an error in foreground/background detection. "
+            "Ensure text covers < 50% of image area."
+        )
+    
+    # Sample foreground pixels from original grayscale image
+    foreground_pixels = gray[foreground_mask > 0]
+    
+    if len(foreground_pixels) == 0:
+        # No foreground pixels - assume same as background
+        foreground_mean = np.mean(background_pixels)
+    else:
+        foreground_mean = np.mean(foreground_pixels)
     
     # Calculate mean of background pixels
     background_mean = np.mean(background_pixels)
-    return background_mean
+    return background_mean, foreground_mean
 
 
-def detect_digits_with_contours(image, min_area=50, max_area=None, aspect_ratio_range=(0.2, 3.0)):
+def detect_digits_with_contours(image, min_area=50):
     """
     Detect digit regions using contour detection.
     
@@ -148,11 +186,12 @@ def detect_digits_with_contours(image, min_area=50, max_area=None, aspect_ratio_
     Args:
         image: Input image (BGR format from cv2)
         min_area: Minimum contour area to consider (filters out noise)
-        max_area: Maximum contour area (None = no limit)
-        aspect_ratio_range: (min, max) aspect ratio for bounding boxes
     
     Returns:
         List of detection boxes (x1, y1, x2, y2)
+    
+    Raises:
+        ValueError: If foreground/background cannot be determined (foreground > 45%).
     """
     # Convert to greyscale
     if len(image.shape) == 3:
@@ -160,13 +199,8 @@ def detect_digits_with_contours(image, min_area=50, max_area=None, aspect_ratio_
     else:
         gray = image.copy()
     
-    # Apply adaptive thresholding or Otsu's thresholding
-    # Try Otsu's first, fall back to adaptive if needed
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    
-    # Alternative: use adaptive thresholding for varying lighting
-    # binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-    #                                cv2.THRESH_BINARY_INV, 11, 2)
+    # Get foreground mask (foreground=255, background=0)
+    binary = get_foreground_mask(image)
     
     # Find contours
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -174,27 +208,13 @@ def detect_digits_with_contours(image, min_area=50, max_area=None, aspect_ratio_
     detections = []
     h, w = gray.shape
     
-    # Set default max_area if not provided (e.g., 10% of image area)
-    if max_area is None:
-        max_area = (w * h) * 0.1
-    
     for contour in contours:
         # Get bounding rectangle
         x, y, box_w, box_h = cv2.boundingRect(contour)
         area = box_w * box_h
         
-        # Filter by area
-        if area < min_area or area > max_area:
-            continue
-        
-        # Calculate aspect ratio
-        if box_h > 0:
-            aspect_ratio = box_w / box_h
-        else:
-            continue
-        
-        # Filter by aspect ratio (digits are usually not too wide or too tall)
-        if aspect_ratio < aspect_ratio_range[0] or aspect_ratio > aspect_ratio_range[1]:
+        # Filter by minimum area (removes noise)
+        if area < min_area:
             continue
         
         # Add padding around the bounding box
@@ -210,9 +230,123 @@ def detect_digits_with_contours(image, min_area=50, max_area=None, aspect_ratio_
 
 
 def extract_and_process_region(image, box, target_size=(28, 28), 
+background_mean=0, foreground_mean=255):
+    """
+    Extract region from image, scale to 28x28 first, then apply transformations.
+    
+    Args:
+        image: Input image (BGR format from cv2)
+        box: Bounding box (x1, y1, x2, y2)
+        target_size: Target size (width, height)
+        background_mean: mean value of background (determined from full image)
+        foreground_mean: mean value of foreground/digits (determined from full image)
+    
+    Returns:
+        Processed 28x28 binary image
+    """
+    x1, y1, x2, y2 = map(int, box)
+    
+    # Determine if digits are darker or lighter than background
+    digits_are_darker = foreground_mean < background_mean
+    
+    # Ensure coordinates are within image bounds
+    h, w = image.shape[:2]
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(w, x2)
+    y2 = min(h, y2)
+    
+    # Extract region
+    region = image[y1:y2, x1:x2]
+    
+    # Convert to grayscale if needed
+    if len(region.shape) == 3:
+        region = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    
+    # === STEP 1: Scale to 28x28 maintaining aspect ratio ===
+    region_h, region_w = region.shape[:2]
+    
+    # Skip very small regions
+    if region_h < 2 or region_w < 2:
+        # Return a blank 28x28 image
+        return np.zeros(target_size, dtype=np.uint8)
+    
+    # Leave margin for padding (digit centered with some border)
+    margin = 4
+    max_dim = max(region_h, region_w)
+    scale = (target_size[0] - margin) / max_dim
+    new_w = max(1, int(region_w * scale))  # Ensure at least 1 pixel
+    new_h = max(1, int(region_h * scale))  # Ensure at least 1 pixel
+    
+    # Resize maintaining aspect ratio
+    scaled = cv2.resize(region, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    
+    # Add padding to center and make it target_size
+    pad_h = (target_size[0] - new_h) // 2
+    pad_w = (target_size[1] - new_w) // 2
+    pad_h_remainder = (target_size[0] - new_h) % 2
+    pad_w_remainder = (target_size[1] - new_w) % 2
+    
+    # Pad with background color
+    pad_value = int(background_mean)
+    digit_28x28 = cv2.copyMakeBorder(
+        scaled,
+        top=pad_h,
+        bottom=pad_h + pad_h_remainder,
+        left=pad_w,
+        right=pad_w + pad_w_remainder,
+        borderType=cv2.BORDER_CONSTANT,
+        value=pad_value
+    )
+    
+    # === STEP 2: Apply transformations on 28x28 image ===
+    
+    # Light noise reduction
+    filtered = cv2.bilateralFilter(digit_28x28, 5, 50, 50)
+    
+    # Dilate to preserve stroke thickness before thresholding
+    dilate_kernel = np.ones((1, 1), np.uint8)
+    if not digits_are_darker:
+        # Digits are lighter than background: dilate to expand bright digits
+        dilated = cv2.dilate(filtered, dilate_kernel, iterations=1)
+    else:
+        # Digits are darker than background: erode to expand dark digits
+        dilated = cv2.erode(filtered, dilate_kernel, iterations=1)
+    
+    # Threshold - with offset to include more grays as white (digit pixels)
+    # Higher offset = lower threshold = more grays become white
+    threshold_offset = 1  # Adjust this value: 0-50, higher = more grays become white
+    
+    if not digits_are_darker:
+        # Digits are lighter than background - use Otsu's threshold
+        otsu_thresh, _ = cv2.threshold(dilated, 0, 255, cv2.THRESH_OTSU)
+        adjusted_thresh = max(0, otsu_thresh - threshold_offset)
+        _, binary = cv2.threshold(dilated, adjusted_thresh, 255, cv2.THRESH_BINARY)
+    else:
+        # Digits are darker than background - use adaptive threshold with inversion
+        # C parameter: higher = more pixels become white after inversion
+        adaptive_C = 5 + (threshold_offset // 4)  # Scale offset for adaptive
+        binary = cv2.adaptiveThreshold(dilated, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, adaptive_C)
+    
+    # Morphological closing to reconnect disconnected parts
+    close_kernel = np.ones((3, 3), np.uint8)
+    closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+    
+    # Light noise removal
+    open_kernel = np.ones((1, 1), np.uint8)
+    cleaned = cv2.morphologyEx(closed, cv2.MORPH_OPEN, open_kernel, iterations=1)
+    
+    # Ensure binary output
+    final = np.where(cleaned > 127, 255, 0).astype(np.uint8)
+    
+    return final
+
+
+def extract_and_process_region_prev(image, box, target_size=(28, 28), 
 background_mean=0):
     """
-    Extract region from image, resize to target size, and convert to greyscale.
+    PREVIOUS VERSION: Extract region, transform, then resize multiple times.
     
     Args:
         image: Input image (BGR format from cv2)
@@ -221,7 +355,7 @@ background_mean=0):
         background_mean: mean value of background (determined from full image)
     
     Returns:
-        Processed 56x56 greyscale image
+        Processed 28x28 binary image
     """
     x1, y1, x2, y2 = map(int, box)
 
@@ -236,27 +370,54 @@ background_mean=0):
     
     # Extract region
     digit0 = image[y1:y2, x1:x2]
+    # Convert to grayscale if needed
+    if len(digit0.shape) == 3:
+        digit0 = cv2.cvtColor(digit0, cv2.COLOR_BGR2GRAY)
 
-    target_size = 38
 
-    digit1 = cv2.resize(digit0, (target_size, target_size), interpolation=cv2.INTER_AREA)   
+    digit1 = cv2.resize(digit0, target_size, interpolation=cv2.INTER_AREA)   
     
     # Light noise reduction - very gentle blur to smooth without losing detail
     digit2 = cv2.bilateralFilter(digit1, 5, 50, 50)
     
+    # Threshold based on background type
+    # Dilate grayscale image BEFORE thresholding to preserve thick strokes
+    # For dark background: dilate bright pixels (digits)
+    # For light background: erode (which dilates dark pixels = digits)
+    dilate_kernel = np.ones((3, 3), np.uint8)  # Larger kernel for thin strokes
+    if background_mean < 127:
+        # Dark background: dilate to expand white digits
+        digit2_dilated = cv2.dilate(digit2, dilate_kernel, iterations=1)
+    else:
+        # Light background: erode to expand dark digits (before inversion)
+        digit2_dilated = cv2.erode(digit2, dilate_kernel, iterations=1)
 
-    digit3 = cv2.adaptiveThreshold(digit2, 255, 
-    cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 5)
+    if background_mean < 127:
+        # Dark background with light digits (white-on-black)
+        # Use simple Otsu's threshold - adaptive doesn't work well for this case
+        _, digit3 = cv2.threshold(digit2_dilated, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:
+        # Light background with dark digits (black-on-white)
+        # Use adaptive threshold, then invert to get white-on-black (MNIST format)
+        digit3 = cv2.adaptiveThreshold(digit2_dilated, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 5)
+    
+    # Morphological closing to reconnect nearby disconnected parts
+    close_kernel = np.ones((3, 3), np.uint8)
+    digit3 = cv2.morphologyEx(digit3, cv2.MORPH_CLOSE, close_kernel, iterations=1)
 
     # Very light noise removal - only remove tiny isolated pixels (only for binary)
     kernel = np.ones((1, 1), np.uint8)  # Minimal kernel
     digit4 = cv2.morphologyEx(digit3, cv2.MORPH_OPEN, kernel, iterations=1)
     
-    # heigth and width of original bounding box
+    # Height and width of original bounding box
     h, w = image[y1:y2, x1:x2].shape[:2]
     
     # Calculate scaling factor to fit the larger dimension to target_size
-    scale = target_size / max(h, w)
+    # Leave some margin for padding (e.g., 4 pixels)
+    margin = 4
+    max_dim = max(h, w)
+    scale = (target_size[0] - margin) / max_dim
     new_w = int(w * scale)
     new_h = int(h * scale)
     
@@ -264,11 +425,12 @@ background_mean=0):
     digit5 = cv2.resize(digit4, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
     
     # Add padding to make it square, centering the digit in the target_size
-    pad_h = (target_size - new_h) // 2
-    pad_w = (target_size - new_w) // 2
-    pad_h_remainder = (target_size - new_h) % 2  # Handle odd padding
-    pad_w_remainder = (target_size - new_w) % 2
+    pad_h = (target_size[0] - new_h) // 2
+    pad_w = (target_size[1] - new_w) // 2
+    pad_h_remainder = (target_size[0] - new_h) % 2  # Handle odd padding
+    pad_w_remainder = (target_size[1] - new_w) % 2
     
+    # Add padding with black (0) since we want white digits on black background
     digit6 = cv2.copyMakeBorder(
         digit5,
         top=pad_h,
@@ -276,10 +438,12 @@ background_mean=0):
         left=pad_w,
         right=pad_w + pad_w_remainder,
         borderType=cv2.BORDER_CONSTANT,
-        value=background_mean  # Color matches background mean
+        value=0  # Black padding (MNIST format: white digits on black background)
     )
     
-    digit7 = np.where(digit6 > (background_mean - 1), 0, 255).astype(np.uint8)
+    # Ensure binary: anything that's not white (255) becomes black (0)
+    # digit5 is already binary (0 or 255) from adaptiveThreshold, but padding might have added grayscale
+    digit7 = np.where(digit6 > 127, 255, 0).astype(np.uint8)
     
     # Add 4 pixels of solid black padding on all 4 sides to make 28x28
     # Final size: 52 + 2 + 2 = 56
@@ -294,17 +458,8 @@ background_mean=0):
         value=0  # Black padding
     )
 
-    digit9 = cv2.resize(digit8, (28, 28), interpolation=cv2.INTER_CUBIC)
+    return digit8
 
-    #digit10 = cv2.adaptiveThreshold(digit9, 255, 
-    #cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 5)
-
-    # Very light noise removal - only remove tiny isolated pixels (only for binary)
-    #kernel = np.ones((1, 1), np.uint8)  # Minimal kernel
-    #digit11 = cv2.morphologyEx(digit10, cv2.MORPH_OPEN, kernel, iterations=1)
-    digit11 = digit9
-    
-    return digit11
 
 
 def process_image(input_path, output_dir=None, 
@@ -331,12 +486,12 @@ classifier_model_path=None, classify_digits=False):
     
     image_height, image_width = image.shape[:2]
     
-    # Detect background color using contour-based detection
-    background_mean = detect_background_color_contours(image)
+    # Detect background and foreground colors using contour-based detection
+    background_mean, foreground_mean = detect_background_color_contours(image)
+    print(f"Background mean: {background_mean:.1f}, Foreground mean: {foreground_mean:.1f}")
     
     # Detect digits using contour-based detection
-    detections = detect_digits_with_contours(image, min_area=30, 
-    aspect_ratio_range=(0.15, 4.0))
+    detections = detect_digits_with_contours(image, min_area=30)
     
     if not detections:
         print("Error: No digit regions found using contour detection.")
@@ -373,7 +528,7 @@ classifier_model_path=None, classify_digits=False):
     for line_num, digit_num, box in sorted_detections:
         # Extract and process region
         processed_region = extract_and_process_region(image, box, 
-        background_mean=background_mean)
+        background_mean=background_mean, foreground_mean=foreground_mean)
         
         # Classify digit if requested
         predicted_digit = None

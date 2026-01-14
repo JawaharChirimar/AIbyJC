@@ -6,11 +6,30 @@
 //
 
 import UIKit
+internal import Combine
 
 struct ServerDigitResult: Codable, Sendable {
     let image: String  // Base64
     let digit: Int
     let confidence: Double
+}
+
+struct ModelInfo: Codable, Sendable, Identifiable {
+    let path: String
+    let name: String
+    let run: String
+    
+    var id: String { path }
+    
+    var displayName: String {
+        // Use the "run" name for display (e.g., "run_all_data_aug2x_4conv_64dense")
+        return run != "unknown" ? run : name
+    }
+}
+
+struct ModelsResponse: Codable, Sendable {
+    let models: [ModelInfo]?
+    let error: String?
 }
 
 struct ServerResponse: Sendable {
@@ -37,19 +56,139 @@ extension ServerResponse: Codable {
     }
 }
 
-class DigitClassifierService {
+class DigitClassifierService: ObservableObject {
     
     static let shared = DigitClassifierService()
     
     // ⚠️ UPDATE THIS to your Mac's IP address!
-
+    // Use "localhost" for Simulator, or "192.168.1.172" for real device
+    #if targetEnvironment(simulator)
+    private let serverURL = "http://localhost:5001"
+    #else
     private let serverURL = "http://192.168.1.172:5001"
+    #endif
     
-    // Hard-code your model path (simpler than auto-loading)
-    private let modelPath = "/Users/jaanvichirimar/Development/AIbyJC/DigitNN/data/modelForDE/run_2026_01_06_16_52_06/digit_classifier_epoch_03.h5"
+    // Selected model path (loaded from UserDefaults or set by user)
+    @Published private(set) var selectedModelPath: String?
+    
+    // Available models from server
+    @Published var availableModels: [ModelInfo] = []
+    
+    // Connection status
+    @Published var isServerReachable: Bool?
     
     private init() {
         print("✅ Server: \(serverURL)")
+        loadSelectedModel()
+    }
+    
+    // MARK: - Model Management
+    
+    private func loadSelectedModel() {
+        selectedModelPath = UserDefaults.standard.string(forKey: "selectedModelPath")
+        if let path = selectedModelPath {
+            print("📦 Loaded saved model: \(path)")
+        }
+    }
+    
+    func selectModel(_ model: ModelInfo) {
+        selectedModelPath = model.path
+        UserDefaults.standard.set(model.path, forKey: "selectedModelPath")
+        print("✅ Selected model: \(model.displayName)")
+    }
+    
+    func fetchAvailableModels(completion: @escaping (Result<[ModelInfo], Error>) -> Void) {
+        guard let url = URL(string: "\(serverURL)/api/models") else {
+            completion(.failure(NSError(domain: "URLError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
+        print("🔍 Fetching models from: \(url.absoluteString)")
+        
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            // Check HTTP response first
+            if let httpResponse = response as? HTTPURLResponse {
+                print("📥 Models API HTTP Status: \(httpResponse.statusCode)")
+            }
+            
+            if let error = error {
+                print("❌ Failed to fetch models: \(error.localizedDescription)")
+                print("   Error code: \((error as NSError).code)")
+                print("   Error domain: \((error as NSError).domain)")
+                completion(.failure(error))
+                return
+            }
+            
+            guard let data = data else {
+                print("❌ No data received from models API")
+                completion(.failure(NSError(domain: "NoData", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                return
+            }
+            
+            print("📥 Received \(data.count) bytes from models API")
+            
+            // Print raw response for debugging
+            if let rawResponse = String(data: data, encoding: .utf8) {
+                print("📄 Raw models response: \(rawResponse)")
+            }
+            
+            do {
+                let decoder = JSONDecoder()
+                let response = try decoder.decode(ModelsResponse.self, from: data)
+                
+                if let error = response.error {
+                    print("❌ Server error: \(error)")
+                    completion(.failure(NSError(domain: "ServerError", code: -1, userInfo: [NSLocalizedDescriptionKey: error])))
+                    return
+                }
+                
+                if let models = response.models {
+                    print("✅ Found \(models.count) models")
+                    for model in models {
+                        print("  📦 \(model.displayName) - \(model.name)")
+                        print("      Path: \(model.path)")
+                    }
+                    
+                    DispatchQueue.main.async {
+                        self.availableModels = models
+                        
+                        // If no model selected yet, select the first one
+                        if self.selectedModelPath == nil, let firstModel = models.first {
+                            self.selectModel(firstModel)
+                        }
+                    }
+                    
+                    completion(.success(models))
+                } else {
+                    print("❌ No models in response")
+                    completion(.failure(NSError(domain: "NoModels", code: -1, userInfo: [NSLocalizedDescriptionKey: "No models found"])))
+                }
+                
+            } catch {
+                print("❌ JSON decode error: \(error)")
+                if let decodingError = error as? DecodingError {
+                    switch decodingError {
+                    case .keyNotFound(let key, let context):
+                        print("   Missing key: \(key.stringValue)")
+                        print("   Context: \(context.debugDescription)")
+                    case .typeMismatch(let type, let context):
+                        print("   Type mismatch: expected \(type)")
+                        print("   Context: \(context.debugDescription)")
+                    case .valueNotFound(let type, let context):
+                        print("   Value not found: \(type)")
+                        print("   Context: \(context.debugDescription)")
+                    case .dataCorrupted(let context):
+                        print("   Data corrupted: \(context.debugDescription)")
+                    @unknown default:
+                        print("   Unknown decoding error")
+                    }
+                }
+                completion(.failure(error))
+            }
+        }.resume()
     }
     
     // Test server connection
@@ -87,6 +226,12 @@ class DigitClassifierService {
     
     
     func processImage(_ image: UIImage, completion: @escaping (Result<[ServerDigitResult], Error>) -> Void) {
+        
+        guard let modelPath = selectedModelPath else {
+            print("❌ No model selected")
+            completion(.failure(NSError(domain: "NoModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "No model selected. Please select a model first."])))
+            return
+        }
         
         guard let imageData = image.jpegData(compressionQuality: 0.8) else {
             print("❌ Failed to convert image to JPEG data")

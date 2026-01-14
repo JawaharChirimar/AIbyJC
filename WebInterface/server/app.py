@@ -48,11 +48,11 @@ def process_image_for_api(image_array, classifier_model_path):
         image = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
         image_height = image.shape[0]
         
-        # Detect background color
-        background_mean = detect_background_color_contours(image)
+        # Detect background and foreground colors
+        background_mean, foreground_mean = detect_background_color_contours(image)
         
         # Detect digits
-        detections = detect_digits_with_contours(image, min_area=30, aspect_ratio_range=(0.15, 4.0))
+        detections = detect_digits_with_contours(image, min_area=30)
         
         if not detections:
             return {'error': 'No digit regions found. Please ensure the image contains visible handwritten digits.'}
@@ -73,7 +73,7 @@ def process_image_for_api(image_array, classifier_model_path):
         results = []
         for line_num, digit_num, box in sorted_detections:
             # Extract and process region
-            processed_region = extract_and_process_region(image, box, background_mean=background_mean)
+            processed_region = extract_and_process_region(image, box, background_mean=background_mean, foreground_mean=foreground_mean)
             
             # Classify digit
             try:
@@ -159,7 +159,7 @@ def classify_image():
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
         if image is None:
-            return jsonify({'error': 'Could not decode image. Please ensure it is a valid JPEG file.'}), 400
+            return jsonify({'error': 'Could not decode image. Please ensure it is a valid JPEG or PNG file.'}), 400
         
         # Process image
         result = process_image_for_api(image, model_path)
