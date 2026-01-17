@@ -5,3 +5,7 @@ DigitNN/__pycache__
 DigitNN/data/temp/
 DigitNN/data/DERun/
 DigitNN/data/MNIST/
+AIbyJCApp/AIbyJCApp.xcodeproj/project.xcworkspace/
+DigitNN/data/1missing.jpeg
+DigitNN/data/autoencoder/
+DigitNN/data/font_digits/
