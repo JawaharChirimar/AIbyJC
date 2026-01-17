@@ -189,6 +189,20 @@ main {
     color: #333;
 }
 
+/* Low confidence warning (< 90%) */
+.result-item.low-confidence {
+    background: #ffe6e6 !important;
+    border-color: #f80303 !important;
+}
+
+.result-item.low-confidence .digit {
+    color: #cc0000 !important;
+}
+
+.result-item.low-confidence .confidence-value {
+    color: #cc0000 !important;
+}
+
 /* Scrollbar styling */
 .results-container::-webkit-scrollbar {
     width: 10px;

@@ -150,6 +150,13 @@ function displayResults(results) {
         const item = document.createElement('div');
         item.className = 'result-item';
         
+        // Add low-confidence class if confidence < 90%
+        console.log('Confidence:', result.confidence, 'Is low:', result.confidence < 0.90);
+        if (result.confidence < 0.6666) {
+            item.classList.add('low-confidence');
+            console.log('Added low-confidence class');
+        }
+        
         const img = document.createElement('img');
         img.src = `data:image/jpeg;base64,${result.image}`;
         img.alt = `Digit ${result.digit}`;
