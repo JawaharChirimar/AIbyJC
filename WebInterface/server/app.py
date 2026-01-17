@@ -22,7 +22,7 @@ from DigitsExtractor import (
     extract_and_process_region,
     detect_background_color_contours
 )
-from DigitClassifierNN import load_or_create_digit_classifier, classify_digit
+from DigitClassifierALL import load_or_create_digit_classifier, classify_digit, sigmoid_accuracy
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend
