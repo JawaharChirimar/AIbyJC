@@ -9,3 +9,6 @@ AIbyJCApp/AIbyJCApp.xcodeproj/project.xcworkspace/
 DigitNN/data/1missing.jpeg
 DigitNN/data/autoencoder/
 DigitNN/data/font_digits/
+DigitNN/data/input/
+node_modules/
+.vscode/
