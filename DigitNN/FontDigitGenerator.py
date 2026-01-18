@@ -40,7 +40,8 @@ import cv2
 # =============================================================================
 # Google Fonts API Key - Get from: https://console.cloud.google.com/
 # Enable "Google Fonts Developer API" and create an API key
-GOOGLE_FONTS_API_KEY = "AIzaSyDxmhBmoLdp70uZP5MXRZLmJi_-Vk_atm8"
+# We get it either from the command line 
+# or from the environment variable GOOGLE_FONTS_API_KEY
 
 DIGITS = "0123456789"
 TARGET_SIZE = (28, 28)  # MNIST format: 28x28 pixels
@@ -539,14 +540,13 @@ Each font uses 1 weight (preferring regular).
     args = parser.parse_args()
     
     # API key priority: command line > code constant > environment variable
-    api_key = args.api_key or GOOGLE_FONTS_API_KEY or os.environ.get("GOOGLE_FONTS_API_KEY")
+    api_key = args.api_key or os.environ.get("GOOGLE_FONTS_API_KEY")
     
     if not api_key:
         print("Error: API key required.")
         print("\nOptions to provide API key:")
-        print("1. Set GOOGLE_FONTS_API_KEY constant in FontDigitGenerator.py")
-        print("2. Pass --api-key YOUR_KEY on command line")
-        print("3. Set GOOGLE_FONTS_API_KEY environment variable")
+        print("1. Pass --api-key YOUR_KEY on command line")
+        print("2. Set GOOGLE_FONTS_API_KEY environment variable")
         print("\nTo get an API key:")
         print("1. Go to https://console.cloud.google.com/")
         print("2. Create a project (or select existing)")
