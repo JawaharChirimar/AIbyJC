@@ -457,7 +457,7 @@ background_mean=0):
         borderType=cv2.BORDER_CONSTANT,
         value=0  # Black padding
     )
-
+    
     return digit8
 
 

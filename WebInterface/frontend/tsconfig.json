@@ -1,0 +1,14 @@
+{
+	"compilerOptions": {
+		"outDir": "./dist",
+		"target": "es5",
+		"module": "commonjs",
+		"esModuleInterop": true,
+		"removeComments": true,
+		"sourceMap": true,
+		"jsx": "react",
+		"jsxFactory": "h",
+		"baseUrl": "./src",
+		"strict": true
+	}
+}
