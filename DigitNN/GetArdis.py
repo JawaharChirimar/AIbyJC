@@ -11,7 +11,12 @@ import numpy as np
 import cv2
 
 # Data directory for ARDIS
-DATA_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data"
+HOME_PATH = Path.home()
+if "ubuntu" in str(HOME_PATH).lower():
+    DATA_DIR = Path.home() / "AIbyJC" / "DigitNN" / "data"
+else:
+    DATA_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data"
+    
 ARDIS_DIR = DATA_DIR / "ardis"
 
 
