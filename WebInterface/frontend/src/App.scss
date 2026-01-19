@@ -44,14 +44,14 @@ header {
 }
 
 header h1 {
-    font-size: 1.5rem;
-    margin-bottom: 0.5rem;
+    font-size: 1.25rem;
+    margin-bottom: 0.25rem;
     text-transform: uppercase;
-    font-weight: 500;
+    font-weight: 400;
 }
 
 header p {
-    font-size: 1.1em;
+    font-size: 1em;
     opacity: 0.9;
 }
 
@@ -73,16 +73,65 @@ main {
     margin-bottom: 25px;
 }
 
-.form-group input[type="file"] {
-    width: 100%;
-    padding: 12px;
-    border: 2px solid #e0e0e0;
-    border-radius: 8px;
-    font-size: 1em;
-    transition: border-color 0.3s;
+.input-with-icon {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
-.form-group input[type="file"]:focus {
+.input-icon {
+    color: #666;
+    flex-shrink: 0;
+    align-self: center;
+    font-size: 1.1rem;
+    width: 20px;
+    text-align: center;
+}
+
+.input-with-icon .react-select-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.file-input-label {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+.file-input-hidden {
+    position: absolute;
+    width: 0.1px;
+    height: 0.1px;
+    opacity: 0;
+    overflow: hidden;
+    z-index: -1;
+}
+
+.file-input-text {
+    flex: 1;
+    height: 2.5rem;
+    padding: 6px 8px;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    transition: border-color 0.3s;
+    background: white;
+    color: #333;
+}
+
+.file-input-label:hover .file-input-text {
+    border-color: #555;
+}
+
+.file-input-hidden:focus + .file-input-text {
     outline: none;
     border-color: #555;
 }
@@ -94,12 +143,12 @@ main {
 }
 
 .btn-primary {
-    background: linear-gradient(90deg, #373737 0%, #000000 100%);
+    background: linear-gradient(90deg, #848484 0%, #424242 100%);
     color: white;
     border: none;
-    padding: 16px 32px;
-    font-size: 1.125rem;
-    font-weight: 400;
+    padding: 8px 32px;
+    font-size: 1rem;
+    font-weight: 300;
     border-radius: 8px;
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
@@ -134,7 +183,10 @@ main {
 .results-section h2 {
     margin-bottom: 1rem;
     color: #333;
-    font-size: 1.25rem;
+    text-align: center;
+    font-size: 1rem;
+    text-transform: uppercase;
+    font-weight: 600;
     flex-shrink: 0;
 }
 
@@ -264,14 +316,19 @@ main {
 /* React Select Styling */
 .react-select-container {
 	width: 100%;
+	flex: 1;
 }
 
 .react-select__control {
-	min-height: 52px !important;
+	height: 2.5rem !important;
+	min-height: 2.5rem !important;
 	padding: 0 !important;
 	border: 2px solid #e0e0e0 !important;
 	border-radius: 8px !important;
 	box-shadow: none !important;
+	display: flex !important;
+	align-items: center !important;
+	width: 100% !important;
 }
 
 .react-select__control:hover {
