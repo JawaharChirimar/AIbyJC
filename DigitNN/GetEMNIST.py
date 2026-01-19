@@ -47,6 +47,7 @@ def load_emnist_from_zip(zip_path='~/.cache/emnist/emnist.zip', split='digits'):
                     rows = struct.unpack('>I', f.read(4))[0]
                     cols = struct.unpack('>I', f.read(4))[0]
                     x_train = np.frombuffer(f.read(), dtype=np.uint8).reshape(num_images, rows, cols)
+                    # No rotation/flip needed - EMNIST from zip is already correctly oriented
             
             # Extract and decompress training labels
             with zf.open(train_labels_gz) as f_gz:
@@ -63,6 +64,7 @@ def load_emnist_from_zip(zip_path='~/.cache/emnist/emnist.zip', split='digits'):
                     rows = struct.unpack('>I', f.read(4))[0]
                     cols = struct.unpack('>I', f.read(4))[0]
                     x_test = np.frombuffer(f.read(), dtype=np.uint8).reshape(num_images, rows, cols)
+                    # No rotation/flip needed - EMNIST from zip is already correctly oriented
             
             # Extract and decompress test labels
             with zf.open(test_labels_gz) as f_gz:

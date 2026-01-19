@@ -19,7 +19,6 @@ import albumentations as A
 # Import dataset loaders
 from GetArdis import load_ardis_dataset
 from GetUSPS import load_usps_dataset
-from GetEMNIST import load_emnist_from_zip
 
 try:
     from emnist import extract_training_samples, extract_test_samples
@@ -164,10 +163,14 @@ def create_negative_examples(total_digit_samples, target_ratio=0.133):
     # 5-7. Broken digit images (from EMNIST digits)
     # Load EMNIST digits to create broken versions
     n_broken_total = n_horiz_cut + n_vert_cut + n_pixel_removal
-    if EMNIST_AVAILABLE and n_broken_total > 0:
+    if n_broken_total > 0:
         try:
-            x_digits, _ = extract_training_samples('digits')
-            x_digits = x_digits.astype('float32') / 255.0
+            # Use package only - if it fails, skip broken digit negatives
+            if EMNIST_AVAILABLE:
+                x_digits, _ = extract_training_samples('digits')
+                x_digits = x_digits.astype('float32') / 255.0
+            else:
+                raise Exception("EMNIST package not available")
             
             # 5. Horizontal cut - remove middle third (rows 9-18)
             if n_horiz_cut > 0:
@@ -734,7 +737,18 @@ class SigmoidDiagnosticsCallback(keras.callbacks.Callback):
             neg_max = np.max(y_pred[self.negative_mask], axis=1)
             neg_rejected = np.sum(neg_max < SIGMOID_THRESHOLD)
             neg_acc = neg_rejected / self.n_negatives * 100
+            # Show distribution stats to detect if negatives are too easy
+            neg_mean = np.mean(neg_max)
+            neg_std = np.std(neg_max)
+            neg_max_val = np.max(neg_max)
+            neg_median = np.median(neg_max)
             results.append(f"Neg rejected: {neg_acc:.1f}% ({neg_rejected}/{self.n_negatives})")
+            # Show stats every epoch to monitor
+            if epoch == 0 or (epoch + 1) % 5 == 0:  # Show detailed stats on first epoch and every 5 epochs
+                print(f"    Neg stats: mean={neg_mean:.3f}, median={neg_median:.3f}, max={neg_max_val:.3f}, std={neg_std:.3f}")
+            # Add warning if negatives seem too easy
+            if neg_mean < 0.1 and neg_max_val < 0.3:
+                print(f"    WARNING: Negatives may be too easy! Consider making them more challenging.")
         
         print(f"  [Sigmoid] {' | '.join(results)}")
 
@@ -841,22 +855,9 @@ def load_and_combine_datasets(use_sigmoid=False):
     
     # Load EMNIST Digits (includes MNIST - no need to load MNIST separately)
     print("Loading EMNIST Digits dataset (includes MNIST)...")
-    x_train_emnist, y_train_emnist, x_test_emnist, y_test_emnist = load_emnist_from_zip(split='digits')
     
-    if x_train_emnist is not None:
-        # Successfully loaded from zip file
-        train_len = len(x_train_emnist)
-        test_len = len(x_test_emnist)
-        print(f"  EMNIST Digits: {train_len} training, {test_len} test samples (loaded from zip)")
-        sampled_datasets.append((x_train_emnist, y_train_emnist))
-        sampled_names.append(f"EMNIST ({train_len})")
-        test_datasets.append((x_test_emnist, y_test_emnist))
-    elif EMNIST_AVAILABLE:
-        # Try using the emnist package as fallback
+    if EMNIST_AVAILABLE:
         try:
-            if EMNIST_NUMPY_WARNING:
-                print("  Note: NumPy >= 1.25 detected. Trying emnist package (may fail)...")
-            
             x_train_emnist, y_train_emnist = extract_training_samples('digits')
             x_test_emnist, y_test_emnist = extract_test_samples('digits')
             
@@ -868,18 +869,14 @@ def load_and_combine_datasets(use_sigmoid=False):
             
             train_len = len(x_train_emnist)
             test_len = len(x_test_emnist)
-            print(f"  EMNIST Digits: {train_len} training, {test_len} test samples (from package)")
+            print(f"  EMNIST Digits: {train_len} training, {test_len} test samples")
             sampled_datasets.append((x_train_emnist, y_train_emnist))
             sampled_names.append(f"EMNIST ({train_len})")
             test_datasets.append((x_test_emnist, y_test_emnist))
         except Exception as e:
             error_msg = str(e)
-            if "0-dimensional arrays" in error_msg or "can be converted to Python scalars" in error_msg:
-                print(f"  Warning: emnist package failed due to NumPy compatibility issue.")
-                print("  Falling back to MNIST only...")
-            else:
-                print(f"  Warning: Could not load EMNIST Digits: {error_msg}")
-                print("  Falling back to MNIST only...")
+            print(f"  Warning: Could not load EMNIST Digits: {error_msg}")
+            print("  Falling back to MNIST only...")
             # Fallback to MNIST
             print("Loading MNIST dataset...")
             (x_train_mnist, y_train_mnist), (x_test_mnist, y_test_mnist) = keras.datasets.mnist.load_data()
@@ -888,7 +885,7 @@ def load_and_combine_datasets(use_sigmoid=False):
             sampled_names.append(f"MNIST ({len(x_train_mnist)})")
             test_datasets.append((x_test_mnist, y_test_mnist))
     else:
-        print("  EMNIST package not available and zip file loading failed.")
+        print("  EMNIST package not available.")
         print("  Falling back to MNIST only...")
         # Fallback to MNIST if EMNIST not available
         print("Loading MNIST dataset...")
