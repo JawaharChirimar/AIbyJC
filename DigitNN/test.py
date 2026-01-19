@@ -6,7 +6,8 @@ from DigitsExtractor import detect_digits_with_contours, detect_background_color
 from DigitClassifierALL import load_or_create_digit_classifier, classify_digit
 
 img_path = Path(__file__).parent / "data/input/hw4.png"
-img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 model_path = Path(__file__).parent / "data/modelForDE/run_sigmoid_aug2x_4conv_64dense_newData/digit_classifier_final.keras"
 model = load_or_create_digit_classifier(train_model=False, classifier_model_path=str(model_path))
