@@ -16,7 +16,11 @@ from pathlib import Path
 import random
 
 # Output directory
-OUTPUT_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data" / "custom_one"
+HOME_PATH = Path.home()
+if "ubuntu" in str(HOME_PATH).lower():
+    OUTPUT_DIR = Path.home() / "AIbyJC" / "DigitNN" / "data" / "custom_one"
+else:
+    OUTPUT_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data" / "custom_one"
 
 # Number of variations to generate
 NUM_VARIATIONS = 1000
