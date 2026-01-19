@@ -19,6 +19,7 @@ import albumentations as A
 # Import dataset loaders
 from GetArdis import load_ardis_dataset
 from GetUSPS import load_usps_dataset
+from GetEMNIST import load_emnist_from_zip
 
 try:
     from emnist import extract_training_samples, extract_test_samples
@@ -26,6 +27,17 @@ try:
 except ImportError:
     EMNIST_AVAILABLE = False
     print("Warning: 'emnist' package not available. Install with: pip install emnist")
+
+# Check numpy version for EMNIST compatibility
+try:
+    numpy_version = np.__version__
+    numpy_major, numpy_minor = map(int, numpy_version.split('.')[:2])
+    if numpy_major > 1 or (numpy_major == 1 and numpy_minor >= 25):
+        EMNIST_NUMPY_WARNING = True
+    else:
+        EMNIST_NUMPY_WARNING = False
+except:
+    EMNIST_NUMPY_WARNING = False
 
 # =============================================================================
 # CONFIGURABLE CONSTANTS
@@ -39,8 +51,11 @@ ROTATION_ANGLE = 30         # Maximum rotation angle for augmentation (±degrees
 SHEAR_ANGLE = 15            # Maximum shear angle for augmentation (±degrees)
 
 # Custom non-digit images directory
-CUSTOM_NON_DIGITS_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data" / "non-digits"
-
+HOME_PATH = Path.home()
+if "ubuntu" in str(HOME_PATH).lower():
+    DATA_DIR = Path.home() / "AIbyJC" / "DigitNN" / "data"
+else:
+    DATA_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data"
 
 def load_custom_non_digits():
     """
@@ -51,11 +66,11 @@ def load_custom_non_digits():
         numpy array of shape (N, 28, 28, 1), normalized [0,1], or empty array if none found
     """
     custom_images = []
-    data_dir = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data"
+    CUSTOM_NON_DIGITS_DIR = DATA_DIR / "non-digits"
     
     # Load individual not*.jpeg/png files from data directory
     for pattern in ["not*.jpeg", "not*.jpg", "not*.png"]:
-        for img_path in data_dir.glob(pattern):
+        for img_path in DATA_DIR.glob(pattern):
             try:
                 img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
                 if img is not None:
@@ -734,12 +749,11 @@ def load_font_digits(use_sigmoid=False):
     Returns:
         Tuple of (x_data, y_data) or (None, None) if not available
     """
-    font_dir = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data" / "font_digits"
     
     if use_sigmoid:
-        npz_path = font_dir / "font_digits_sigmoid.npz"
+        npz_path = DATA_DIR / "font_digits" / "font_digits_sigmoid.npz"
     else:
-        npz_path = font_dir / "font_digits_softmax.npz"
+        npz_path = DATA_DIR / "font_digits" / "font_digits_softmax.npz"
     
     if npz_path.exists():
         try:
@@ -767,12 +781,11 @@ def load_custom_one(use_sigmoid=False):
     Returns:
         Tuple of (x_data, y_data) or (None, None) if not available
     """
-    custom_dir = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data" / "custom_one"
     
     if use_sigmoid:
-        npz_path = custom_dir / "custom_one_sigmoid.npz"
+        npz_path = DATA_DIR / "custom_one" / "custom_one_sigmoid.npz"
     else:
-        npz_path = custom_dir / "custom_one_softmax.npz"
+        npz_path = DATA_DIR / "custom_one" / "custom_one_softmax.npz"
     
     if npz_path.exists():
         try:
@@ -827,21 +840,56 @@ def load_and_combine_datasets(use_sigmoid=False):
     # =========================================================================
     
     # Load EMNIST Digits (includes MNIST - no need to load MNIST separately)
-    if EMNIST_AVAILABLE:
+    print("Loading EMNIST Digits dataset (includes MNIST)...")
+    x_train_emnist, y_train_emnist, x_test_emnist, y_test_emnist = load_emnist_from_zip(split='digits')
+    
+    if x_train_emnist is not None:
+        # Successfully loaded from zip file
+        train_len = len(x_train_emnist)
+        test_len = len(x_test_emnist)
+        print(f"  EMNIST Digits: {train_len} training, {test_len} test samples (loaded from zip)")
+        sampled_datasets.append((x_train_emnist, y_train_emnist))
+        sampled_names.append(f"EMNIST ({train_len})")
+        test_datasets.append((x_test_emnist, y_test_emnist))
+    elif EMNIST_AVAILABLE:
+        # Try using the emnist package as fallback
         try:
-            print("Loading EMNIST Digits dataset (includes MNIST)...")
+            if EMNIST_NUMPY_WARNING:
+                print("  Note: NumPy >= 1.25 detected. Trying emnist package (may fail)...")
+            
             x_train_emnist, y_train_emnist = extract_training_samples('digits')
             x_test_emnist, y_test_emnist = extract_test_samples('digits')
-            print(f"  EMNIST Digits: {len(x_train_emnist)} training, {len(x_test_emnist)} test samples")
-            if len(x_train_emnist) > 0:
-                sampled_datasets.append((x_train_emnist, y_train_emnist))
-                sampled_names.append(f"EMNIST ({len(x_train_emnist)})")
-                test_datasets.append((x_test_emnist, y_test_emnist))
+            
+            # Convert to numpy arrays if needed
+            x_train_emnist = np.asarray(x_train_emnist, dtype=np.uint8)
+            y_train_emnist = np.asarray(y_train_emnist, dtype=np.uint8)
+            x_test_emnist = np.asarray(x_test_emnist, dtype=np.uint8)
+            y_test_emnist = np.asarray(y_test_emnist, dtype=np.uint8)
+            
+            train_len = len(x_train_emnist)
+            test_len = len(x_test_emnist)
+            print(f"  EMNIST Digits: {train_len} training, {test_len} test samples (from package)")
+            sampled_datasets.append((x_train_emnist, y_train_emnist))
+            sampled_names.append(f"EMNIST ({train_len})")
+            test_datasets.append((x_test_emnist, y_test_emnist))
         except Exception as e:
-            print(f"Warning: Could not load EMNIST Digits: {e}")
+            error_msg = str(e)
+            if "0-dimensional arrays" in error_msg or "can be converted to Python scalars" in error_msg:
+                print(f"  Warning: emnist package failed due to NumPy compatibility issue.")
+                print("  Falling back to MNIST only...")
+            else:
+                print(f"  Warning: Could not load EMNIST Digits: {error_msg}")
+                print("  Falling back to MNIST only...")
+            # Fallback to MNIST
+            print("Loading MNIST dataset...")
+            (x_train_mnist, y_train_mnist), (x_test_mnist, y_test_mnist) = keras.datasets.mnist.load_data()
+            print(f"  MNIST: {len(x_train_mnist)} training, {len(x_test_mnist)} test samples")
+            sampled_datasets.append((x_train_mnist, y_train_mnist))
+            sampled_names.append(f"MNIST ({len(x_train_mnist)})")
+            test_datasets.append((x_test_mnist, y_test_mnist))
     else:
-        print("EMNIST package not available. Install with: pip install emnist")
-        print("Falling back to MNIST only...")
+        print("  EMNIST package not available and zip file loading failed.")
+        print("  Falling back to MNIST only...")
         # Fallback to MNIST if EMNIST not available
         print("Loading MNIST dataset...")
         (x_train_mnist, y_train_mnist), (x_test_mnist, y_test_mnist) = keras.datasets.mnist.load_data()
@@ -998,7 +1046,7 @@ train_model=True, num_epochs=20, use_sigmoid=False):
     
     # We're going to train a new model, so create the run directory now
     # Create timestamped directory for model checkpoints
-    base_dir = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data" / "modelForDE"
+    base_dir = DATA_DIR / "modelForDE"
     base_dir.mkdir(parents=True, exist_ok=True)
     
     # Create timestamped run directory: run_YYYY_MM_DD_HH_MM_SS
