@@ -1,6 +1,7 @@
 import { h, Component } from "preact";
 import React from "react";
 import Select from "react-select";
+import "@fortawesome/fontawesome-free/css/all.css";
 import "App.scss";
 
 const API_BASE_URL = 'http://localhost:5001/api';
@@ -171,41 +172,53 @@ export class App extends Component<{}, AppState> {
 				<main>
 					<header>
 						<h1>Digit Classifier</h1>
-						<p>Use Deep Learning to classify handwritten digits in uploaded images.</p>
+						<p>Neural Network to classify handwritten digits in images.</p>
 					</header>
 					
 
 					<div class="upload-section">
 						<div class="form-group">
-							<Select
-								value={selectedOption}
-								options={groupedOptions}
-								onChange={(option: { value: string; label: string; dir?: string } | null) => {
-									this.handleModelChange(option ? option.value : "");
-								}}
-								formatOptionLabel={(option: { value: string; label: string; dir?: string }, { context }) => {
-									// Show "Dir: Model" when selected, just "Model" in dropdown
-									if (context === 'value' && option.dir) {
-										return `${option.dir}: ${option.label}`;
-									}
-									return option.label;
-								}}
-								isDisabled={modelsLoading}
-								placeholder={modelsLoading ? "Loading models..." : "Select a model..."}
-								className="react-select-container"
-								classNamePrefix="react-select"
-							/>
+							<div class="input-with-icon">
+								<i class="fa-solid fa-lightbulb"></i>
+								<Select
+									value={selectedOption}
+									options={groupedOptions}
+									onChange={(option: { value: string; label: string; dir?: string } | null) => {
+										this.handleModelChange(option ? option.value : "");
+									}}
+									formatOptionLabel={(option: { value: string; label: string; dir?: string }, { context }) => {
+										// Show "Dir: Model" when selected, just "Model" in dropdown
+										if (context === 'value' && option.dir) {
+											return `${option.dir}: ${option.label}`;
+										}
+										return option.label;
+									}}
+									isDisabled={modelsLoading}
+									placeholder={modelsLoading ? "Loading models..." : "Select a model..."}
+									className="react-select-container"
+									classNamePrefix="react-select"
+								/>
+							</div>
 						</div>
 
 						<div class="form-group">
-							<input 
-								type="file" 
-								id="fileInput" 
-								accept="image/jpeg,image/jpg,image/png"
-								onChange={this.handleFileSelect}
-							/>
+							<div class="input-with-icon">
+							<i class="fa-solid fa-file-image"></i>
+								<label class="file-input-label" for="fileInput">
+									<input 
+										type="file" 
+										id="fileInput" 
+										accept="image/jpeg,image/jpg,image/png"
+										onChange={this.handleFileSelect}
+										class="file-input-hidden"
+									/>
+									<span class="file-input-text">
+										{selectedFile ? selectedFile.name : "Choose file..."}
+									</span>
+								</label>
+							</div>
 							<div class="file-info" id="fileInfo"></div>
-							<small>Image must be jpeg/png file under 2MB.</small>
+							<small style="margin-left: 2rem;">Image must be jpeg/png file under 2MB.</small>
 						</div>
 
 						<button 
