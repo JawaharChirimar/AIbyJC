@@ -28,7 +28,7 @@ app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend
 
 # Base directory for models
-MODELS_BASE_DIR = Path(__file__).parent.parent.parent / "Development" / "AIbyJC" / "DigitNN" / "data" / "modelForDE"
+MODELS_BASE_DIR = Path(__file__).parent.parent.parent / "DigitNN" / "data" / "modelForDE"
 
 
 def process_image_for_api(image_array, classifier_model_path):
