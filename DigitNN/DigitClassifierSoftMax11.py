@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-DigitClassifier.py
+DigitClassifierSoftMax11.py
 
 Provides functions for creating, training, and using a CNN-based digit classifier.
-The classifier is trained on the MNIST and EMNIST Digits datasets to recognize handwritten digits (0-9).
+Uses softmax with 11 classes: 10 digits (0-9) + 1 "not a digit" class (10).
 """
 
 import os
@@ -48,7 +48,7 @@ SAMPLE_RATIO = 1.00         # Fraction of data to randomly sample each epoch
 AUGMENT_RATIO = 0.25        # Fraction of sampled data to augment
 ROTATION_ANGLE = 30         # Maximum rotation angle for augmentation (±degrees)
 SHEAR_ANGLE = 15            # Maximum shear angle for augmentation (±degrees)
-NEGATIVE_RATIO = 0.0        # Ratio of negative examples to digit samples (0% = disabled)
+NEGATIVE_RATIO = 0.20       # Ratio of negative examples to digit samples (20% = ~56K for 282K digits)
 
 # Custom non-digit images directory
 HOME_PATH = Path.home()
@@ -107,8 +107,8 @@ def load_custom_non_digits():
 
 def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO):
     """
-    Create negative examples for sigmoid training.
-    These are images that are NOT digits, labeled with all zeros.
+    Create negative examples for softmax training with 11 classes.
+    These are images that are NOT digits, labeled as class 10.
     
     Implements comprehensive negative generation according to detailed spec:
     - Easy (20%): All Black, All White, Sparse/Dense Noise, Salt & Pepper, Gradient
@@ -123,7 +123,7 @@ def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO):
     Returns:
         Tuple of (x_negative, y_negative) where:
         - x_negative: numpy array of shape (n, 28, 28, 1), normalized [0,1]
-        - y_negative: numpy array of shape (n, 10), all zeros
+        - y_negative: numpy array of shape (n,), all labeled as 10 (not a digit)
     """
     target_count = int(total_digit_samples * target_ratio)
     
@@ -773,13 +773,9 @@ def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO):
     
     if len(negative_images) == 0:
         print("  Warning: No negative images created!")
-        return np.array([]).reshape(0, 28, 28, 1), np.array([]).reshape(0, 10)
+        return np.array([]).reshape(0, 28, 28, 1), np.array([])
     
     # Combine all negative images
-    if len(negative_images) == 0:
-        print("  Warning: No negative images created!")
-        return np.array([]).reshape(0, 28, 28, 1), np.array([]).reshape(0, 10)
-    
     x_negative = np.concatenate(negative_images, axis=0)
     
     # If we're short, fill with additional noise-based negatives
@@ -797,8 +793,8 @@ def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO):
         # Trim to exact target if we somehow got more
         x_negative = x_negative[:target_count]
     
-    # Labels are all zeros (not any digit)
-    y_negative = np.zeros((len(x_negative), 10), dtype=np.float32)
+    # Labels are all class 10 (not a digit) - use integer labels for sparse_categorical_crossentropy
+    y_negative = np.full((len(x_negative),), 10, dtype=np.int32)
     
     # Shuffle
     indices = np.random.permutation(len(x_negative))
@@ -839,14 +835,12 @@ def sigmoid_accuracy(y_true, y_pred):
     return tf.reduce_mean(accuracy)
 
 
-def create_digit_classifier_model(use_sigmoid=False):
+def create_digit_classifier_model():
     """
-    Create a CNN model for digit classification (0-9).
+    Create a CNN model for digit classification with 11 classes (0-9 digits + 10 "not a digit").
     
     Uses deep model architecture with 3 conv layers, optimized for EMNIST (240k+ samples).
-    
-    Args:
-        use_sigmoid: Whether to use sigmoid activation instead of softmax (default: False)
+    Always uses softmax activation with sparse_categorical_crossentropy loss.
     
     Returns:
         Compiled Keras model
@@ -854,24 +848,13 @@ def create_digit_classifier_model(use_sigmoid=False):
     # Model capacity for EMNIST (240k+ samples)
     number_convolution_channels = 32
     number_convolution_channelsF = 64
-    neurons_in_dense_layer = 64
+    neurons_in_dense_layer = 128
     
-    # Output activation and loss function based on use_sigmoid flag
-    if use_sigmoid:
-        output_activation = 'sigmoid'
-        loss_function = 'binary_crossentropy'
-        # Initialize biases negative so default output is LOW (~5%)
-        # Forces model to learn "see features → increase output" 
-        # instead of "default high → suppress on other features"
-        output_layer = layers.Dense(10, activation=output_activation,
-                                    bias_initializer=keras.initializers.Constant(-2.0),
-                                    kernel_regularizer=keras.regularizers.l2(0.001))
-        accuracy_metric = sigmoid_accuracy
-    else:
-        output_activation = 'softmax'
-        loss_function = 'sparse_categorical_crossentropy'
-        output_layer = layers.Dense(10, activation=output_activation)
-        accuracy_metric = 'accuracy'
+    # Always use softmax with 11 classes (0-9 digits + 10 "not a digit")
+    output_activation = 'softmax'
+    loss_function = 'sparse_categorical_crossentropy'
+    output_layer = layers.Dense(11, activation=output_activation)  # 11 classes
+    accuracy_metric = 'accuracy'
     
     # Deep model architecture (4 conv layers)
     model = keras.Sequential([
@@ -882,8 +865,8 @@ def create_digit_classifier_model(use_sigmoid=False):
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
         layers.Dropout(0.25),
-        #layers.Conv2D(number_convolution_channels, (3, 3), activation='elu'),
-        #layers.BatchNormalization(),
+        layers.Conv2D(number_convolution_channels, (3, 3), activation='elu'),
+        layers.BatchNormalization(),
         layers.Conv2D(number_convolution_channelsF, (3, 3), activation='elu'),
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
@@ -892,7 +875,7 @@ def create_digit_classifier_model(use_sigmoid=False):
         layers.Dense(neurons_in_dense_layer, activation='elu'),
         layers.BatchNormalization(),
         layers.Dropout(DROPOUT_RATE),
-        output_layer  # 10 classes for digits 0-9
+        output_layer  # 11 classes: 0-9 digits + 10 "not a digit"
     ])
     
     model.compile(
@@ -1043,7 +1026,7 @@ class ImageDataGeneratorWithAugmentation:
         Each epoch:
         - Randomly samples sample_ratio of SAMPLED DIGITS (EMNIST)
         - Uses 100% of FULL DIGITS (ARDIS+USPS+Fonts)
-        - Randomly samples sample_ratio of NEGATIVES  
+        - Randomly samples sample_ratio of NEGATIVES
         - Combines and shuffles
         - Augments augment_ratio of each
         """
@@ -1241,6 +1224,60 @@ class AugmentationStatsCallback(keras.callbacks.Callback):
         else:
             print(f"\n[Epoch {epoch+1}] Base samples processed: {samples_this_epoch:,} (Augmented: {augmented_this_epoch:,}, Original: {original_this_epoch:,})")
         print(f"  Images created: Rotation: {rotation_this_epoch:,}, Shearing: {shearing_this_epoch:,}, Original: {original_this_epoch:,}")
+
+
+class Softmax11DiagnosticsCallback(keras.callbacks.Callback):
+    """
+    Callback to print per-epoch diagnostics for softmax 11-class mode.
+    Shows digit accuracy (0-9) vs negative rejection rate (class 10).
+    """
+    def __init__(self, x_val, y_val):
+        super().__init__()
+        self.x_val = x_val
+        self.y_val = y_val
+        # Precompute masks (they don't change)
+        # Digits are classes 0-9, negatives are class 10
+        self.digit_mask = y_val < 10
+        self.negative_mask = y_val == 10
+        self.n_digits = np.sum(self.digit_mask)
+        self.n_negatives = np.sum(self.negative_mask)
+        self.digit_labels = y_val[self.digit_mask] if self.n_digits > 0 else None
+    
+    def on_epoch_end(self, epoch, logs=None):
+        # Get predictions
+        y_pred = self.model.predict(self.x_val, verbose=0)
+        
+        results = []
+        
+        # Digit classification accuracy (classes 0-9)
+        if self.n_digits > 0:
+            digit_preds = np.argmax(y_pred[self.digit_mask], axis=1)
+            digit_acc = np.mean(digit_preds == self.digit_labels) * 100
+            # Check confidence (max output > 0.5)
+            digit_max_outputs = np.max(y_pred[self.digit_mask], axis=1)
+            digit_confident = np.mean(digit_max_outputs > 0.5) * 100
+            results.append(f"Digits: {digit_acc:.1f}% (conf>0.5: {digit_confident:.1f}%)")
+        
+        # Negative rejection rate (class 10 should be predicted for negatives)
+        if self.n_negatives > 0:
+            neg_preds = np.argmax(y_pred[self.negative_mask], axis=1)
+            neg_rejected = np.sum(neg_preds == 10)
+            neg_acc = neg_rejected / self.n_negatives * 100
+            results.append(f"Neg rejected: {neg_acc:.1f}% ({neg_rejected}/{self.n_negatives})")
+            
+            # Show distribution stats for negatives
+            neg_preds_probs = y_pred[self.negative_mask]
+            neg_class10_probs = neg_preds_probs[:, 10]  # Probability assigned to class 10
+            neg_mean = np.mean(neg_class10_probs)
+            neg_median = np.median(neg_class10_probs)
+            neg_max_val = np.max(neg_class10_probs)
+            neg_std = np.std(neg_class10_probs)
+            
+            # Show stats every epoch to monitor
+            if epoch == 0 or (epoch + 1) % 5 == 0:  # Show detailed stats on first epoch and every 5 epochs
+                print(f"    Neg stats (class 10 prob): mean={neg_mean:.3f}, median={neg_median:.3f}, max={neg_max_val:.3f}, std={neg_std:.3f}")
+        
+        print(f"  [Softmax11] {' | '.join(results)}")
 
 
 class SigmoidDiagnosticsCallback(keras.callbacks.Callback):
@@ -1552,7 +1589,7 @@ def load_and_combine_datasets(use_sigmoid=False):
 
 
 def load_or_create_digit_classifier(classifier_model_path=None, 
-train_model=True, num_epochs=20, use_sigmoid=False):
+train_model=True, num_epochs=20):
     """
     Load a pre-trained digit classifier or create/train a new one.
     
@@ -1562,7 +1599,7 @@ train_model=True, num_epochs=20, use_sigmoid=False):
         classifier_model_path: Path to saved classifier model (.keras file)
         train_model: Whether to train a new model (True) or load existing (False)
         num_epochs: Number of training epochs (default: 20)
-        use_sigmoid: Whether to use sigmoid activation instead of softmax (default: False)
+        Always uses softmax with 11 classes (0-9 digits + 10 "not a digit")
     
     Returns:
         Trained Keras model for digit classification
@@ -1570,15 +1607,10 @@ train_model=True, num_epochs=20, use_sigmoid=False):
 
     print("===========train_model: ", train_model)
     print("===========classifier_model_path: ", classifier_model_path)
-    print("===========type(train_model): ", type(train_model))
-    print("===========train_model == False: ", train_model == False)
-    print("===========train_model is False: ", train_model is False)
     
     # CRITICAL: If train_model is False, we MUST load an existing model - do NOT train
     # Return early - never reach training code below
-    # Check both == False and is False to handle any edge cases
     if not train_model:
-        print("DEBUG: train_model is False, attempting to load model only")
         if classifier_model_path is None or classifier_model_path == '' or not classifier_model_path:
             raise ValueError("classifier_model_path must be provided when train_model=False")
         
@@ -1588,9 +1620,8 @@ train_model=True, num_epochs=20, use_sigmoid=False):
         
         try:
             print(f"Loading digit classifier from: {classifier_model_path}")
-            # Provide custom objects for loading (including custom metrics)
-            custom_objects = {'sigmoid_accuracy': sigmoid_accuracy}
-            model = keras.models.load_model(classifier_model_path, custom_objects=custom_objects)
+            # No custom objects needed for softmax model
+            model = keras.models.load_model(classifier_model_path)
             print("Digit classifier loaded successfully - RETURNING, will NOT train")
             return model  # RETURN HERE - DO NOT CONTINUE TO TRAINING CODE BELOW
         except Exception as e:
@@ -1598,8 +1629,7 @@ train_model=True, num_epochs=20, use_sigmoid=False):
     
     # Only reach here if train_model=True - we're going to train a new model
     print("DEBUG: train_model is True, proceeding to training")
-    if train_model != True and train_model is not True:
-        raise RuntimeError(f"BUG: train_model={train_model} but reached training code. This should never happen!")
+    # Create the run directory now
     # Create timestamped directory for model checkpoints
     base_dir = DATA_DIR / "modelForDE"
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -1611,9 +1641,9 @@ train_model=True, num_epochs=20, use_sigmoid=False):
     
     print(f"Model checkpoints will be saved to: {run_dir}")
     
-    # Create new model
-    print("Creating new digit classifier model...")
-    model = create_digit_classifier_model(use_sigmoid=use_sigmoid)
+    # Create new model (always uses softmax with 11 classes)
+    print("Creating new digit classifier model with 11 classes (0-9 digits + 10 'not a digit')...")
+    model = create_digit_classifier_model()
     
     # Try to train on all digit datasets
     try:
@@ -1621,7 +1651,7 @@ train_model=True, num_epochs=20, use_sigmoid=False):
         # - sampled: EMNIST (will be sampled according to SAMPLE_RATIO per epoch)
         # - full: ARDIS + USPS + Fonts + CustomOne (used 100% every epoch)
         x_sampled_train, y_sampled_train, x_full_train, y_full_train, x_test, y_test = \
-            load_and_combine_datasets(use_sigmoid=use_sigmoid)
+            load_and_combine_datasets(use_sigmoid=False)  # Always use integer labels for softmax
         
         # Store for digit tracking
         x_digits_test = x_test.copy()
@@ -1637,38 +1667,42 @@ train_model=True, num_epochs=20, use_sigmoid=False):
         print(f"  FULL (100% every epoch): {total_full_digits:,} (ARDIS + USPS + Fonts + CustomOne)")
         print(f"  Total digits: {total_digits:,}")
         
-        # For sigmoid mode, create negative examples and keep them SEPARATE
-        x_negative_train = None
-        y_negative_train = None
-        x_negative_test = None
-        y_negative_test = None
+        # Create negative examples (non-digits) labeled as class 10
+        print("\nCreating negative examples for softmax training (11 classes)...")
+        print(f"  Target ratio: {NEGATIVE_RATIO*100:.0f}% of digit samples")
+        x_negative_train, y_negative_train = create_negative_examples(total_digits, target_ratio=NEGATIVE_RATIO)
+        x_negative_test, y_negative_test = create_negative_examples(len(x_digits_test), target_ratio=NEGATIVE_RATIO)
         
-        # Convert labels to one-hot if using sigmoid activation
-        if use_sigmoid:
-            print("\nConverting labels to one-hot encoding for binary_crossentropy...")
-            y_sampled_train = keras.utils.to_categorical(y_sampled_train, 10)
-            if len(y_full_train) > 0:
-                y_full_train = keras.utils.to_categorical(y_full_train, 10)
-            y_digits_test = keras.utils.to_categorical(y_digits_test, 10)
-            
-            # Create negative examples (non-digits) - keep SEPARATE from digits
-            print("\nCreating negative examples for sigmoid training...")
-            print(f"  Target ratio: {NEGATIVE_RATIO*100:.0f}% of digit samples")
-            x_negative_train, y_negative_train = create_negative_examples(total_digits, target_ratio=NEGATIVE_RATIO)
-            x_negative_test, y_negative_test = create_negative_examples(len(x_digits_test), target_ratio=NEGATIVE_RATIO)
-            
-            print(f"  Total negative examples - Train: {len(x_negative_train):,}, Test: {len(x_negative_test):,}")
-            print(f"\nTraining data:")
-            print(f"  Digits: {total_digits:,} ({total_sampled_digits:,} sampled + {total_full_digits:,} full)")
-            print(f"  Non-digits: {len(x_negative_train):,}")
-            print(f"Test data: {len(x_digits_test):,} digits + {len(x_negative_test):,} non-digits")
-            
-            # For validation, we still need combined test data
-            x_test = np.concatenate([x_digits_test, x_negative_test], axis=0)
-            y_test = np.concatenate([y_digits_test, y_negative_test], axis=0)
-            indices = np.random.permutation(len(x_test))
-            x_test = x_test[indices]
-            y_test = y_test[indices]
+        print(f"  Total negative examples - Train: {len(x_negative_train):,}, Test: {len(x_negative_test):,}")
+        print(f"\nTraining data:")
+        print(f"  Digits: {total_digits:,} ({total_sampled_digits:,} sampled + {total_full_digits:,} full)")
+        print(f"  Non-digits (class 10): {len(x_negative_train):,}")
+        print(f"Test data: {len(x_digits_test):,} digits + {len(x_negative_test):,} non-digits")
+        
+        # Print per-class distribution for digits (0-9)
+        print(f"\n=== Per-Class Distribution (Training) ===")
+        y_all_digits = np.concatenate([y_sampled_train, y_full_train], axis=0)
+        unique_digits, digit_counts = np.unique(y_all_digits, return_counts=True)
+        for digit, count in zip(unique_digits, digit_counts):
+            if digit < 10:  # Only digits 0-9
+                print(f"  Digit {digit}: {count:,} samples ({count/total_digits*100:.1f}% of digits)")
+        print(f"  Non-digits (class 10): {len(x_negative_train):,} samples")
+        print(f"  Ratio: {len(x_negative_train)/total_digits:.2f} (non-digits/digits)")
+        print(f"  Per-digit average: {total_digits/10:.0f} samples per digit class")
+        print(f"  Non-digits vs per-digit: {len(x_negative_train)/(total_digits/10):.2f}x")
+        print(f"==========================================\n")
+        
+        # Combine negatives with digits for training (negatives labeled as 10)
+        # For sampled digits (EMNIST) - will be sampled per epoch
+        x_sampled_train = np.concatenate([x_sampled_train, x_negative_train], axis=0)
+        y_sampled_train = np.concatenate([y_sampled_train, y_negative_train], axis=0)
+        
+        # For test data
+        x_test = np.concatenate([x_digits_test, x_negative_test], axis=0)
+        y_test = np.concatenate([y_digits_test, y_negative_test], axis=0)
+        indices = np.random.permutation(len(x_test))
+        x_test = x_test[indices]
+        y_test = y_test[indices]
         
         print(f"\nTest samples: {len(x_test)}")
         print(f"Number of epochs: {num_epochs}")
@@ -1704,14 +1738,9 @@ train_model=True, num_epochs=20, use_sigmoid=False):
         print(f"  FULL (ARDIS+USPS+Fonts+CustomOne): 100% of {total_full_digits:,} = {full_per_epoch:,}")
         print(f"  Total digits per epoch: {digits_per_epoch:,}")
         
-        if use_sigmoid:
-            # Separate sampling for negatives too
-            neg_samples_per_epoch = int(len(x_negative_train) * sample_ratio)
-            total_samples_per_epoch = digits_per_epoch + neg_samples_per_epoch
-            print(f"  Non-digits: {sample_ratio*100:.0f}% of {len(x_negative_train):,} = {neg_samples_per_epoch:,}")
-            print(f"  Total samples per epoch: {total_samples_per_epoch:,}")
-        else:
-            total_samples_per_epoch = digits_per_epoch
+        # Negatives are now part of sampled_train, so they're included in the sampling
+        # Total samples per epoch includes negatives (which are in sampled_train)
+        total_samples_per_epoch = sampled_per_epoch + full_per_epoch
         
         print(f"\nAugmentation: {augment_ratio*100:.0f}% of sampled data will be augmented")
         print(f"              {(1-augment_ratio)*100:.0f}% will remain original")
@@ -1745,28 +1774,19 @@ train_model=True, num_epochs=20, use_sigmoid=False):
         # Build callbacks list
         callbacks_list = [stats_callback, checkpoint_callback]
         
-        # Add sigmoid diagnostics callback if using sigmoid
-        if use_sigmoid:
-            sigmoid_callback = SigmoidDiagnosticsCallback(x_test, y_test)
-            callbacks_list.append(sigmoid_callback)
-            print("Sigmoid diagnostics will be printed after each epoch")
+        # Add softmax 11-class diagnostics callback
+        softmax_callback = Softmax11DiagnosticsCallback(x_test, y_test)
+        callbacks_list.append(softmax_callback)
+        print("Softmax 11-class diagnostics will be printed after each epoch")
         
         # steps_per_epoch based on total sampled data
         steps_per_epoch = total_samples_per_epoch // train_datagen.batch_size
         
-        # Use flow_separate for sigmoid mode (separate digit/negative handling)
-        # Use flow for softmax mode (digits only)
-        if use_sigmoid:
-            data_generator = train_datagen.flow_separate(
-                x_sampled_train, y_sampled_train,  # EMNIST (SAMPLE_RATIO sampled)
-                x_full_train, y_full_train,        # ARDIS+USPS+Fonts+CustomOne (100% used)
-                x_negative_train, y_negative_train  # Negatives (SAMPLE_RATIO sampled)
-            )
-        else:
-            data_generator = train_datagen.flow(
-                x_sampled_train, y_sampled_train,  # EMNIST (SAMPLE_RATIO sampled)
-                x_full_train, y_full_train         # ARDIS+USPS+Fonts (100% used)
-            )
+        # Use flow for softmax mode (digits + negatives combined, negatives labeled as 10)
+        data_generator = train_datagen.flow(
+            x_sampled_train, y_sampled_train,  # EMNIST (SAMPLE_RATIO sampled)
+            x_full_train, y_full_train         # ARDIS+USPS+Fonts (100% used)
+        )
         
         model.fit(
             data_generator,
@@ -1787,12 +1807,8 @@ train_model=True, num_epochs=20, use_sigmoid=False):
             print(f"Total base samples processed across all epochs: {total}")
             print(f"Average base samples per epoch: {total / num_epochs:.0f}")
             
-            # Show digit vs negative breakdown if using sigmoid
-            if use_sigmoid and stats['digit_samples'] > 0:
-                print(f"\nDigit vs Non-digit breakdown:")
-                print(f"  Digits processed: {stats['digit_samples']:,} ({stats['digit_samples']/total*100:.1f}%)")
-                print(f"  Non-digits processed: {stats['negative_samples']:,} ({stats['negative_samples']/total*100:.1f}%)")
-                print(f"  Last epoch: {stats['epoch_digit_count']:,} digits + {stats['epoch_negative_count']:,} non-digits")
+            # Note: Negatives are now part of sampled_train (labeled as class 10)
+            # They're included in the total count but not separately tracked
             
             total_images = stats['rotation_samples'] + stats['shearing_samples'] + stats['original_samples']
             print(f"\nTotal images created across all epochs: {total_images}")
@@ -1918,16 +1934,16 @@ train_model=True, num_epochs=20, use_sigmoid=False):
 
 def classify_digit(classifier_model, digit_image):
     """
-    Classify a single digit image using the CNN model.
+    Classify a single digit image using the CNN model with 11 classes.
     
     Args:
-        classifier_model: Trained Keras model
+        classifier_model: Trained Keras model (11 classes: 0-9 digits + 10 "not a digit")
         digit_image: 28x28 greyscale image (numpy array)
     
     Returns:
         Tuple of (predicted_digit, confidence)
-        - predicted_digit: int (0-9)
-        - confidence: float (0.0-1.0)
+        - predicted_digit: int (0-9) or -1 if class 10 ("not a digit") is predicted
+        - confidence: float (0.0-1.0) or 0.0 if rejected
     """
     # Ensure image is the right shape and type
     if digit_image.shape != (28, 28):
@@ -1947,12 +1963,17 @@ def classify_digit(classifier_model, digit_image):
     # Predict
     predictions = classifier_model.predict(digit_input, verbose=0)
     
-    # Always return argmax (highest output) regardless of absolute value
-    # The model should learn to produce higher outputs for digits during training
-    predicted_digit = int(np.argmax(predictions[0]))
-    confidence = float(predictions[0][predicted_digit])
+    # Get predicted class (0-10)
+    predicted_class = int(np.argmax(predictions[0]))
+    confidence = float(predictions[0][predicted_class])
     
-    return predicted_digit, confidence
+    # If class 10 ("not a digit") is predicted, return -1 with the actual confidence
+    # Frontend will display the image with -1 to show what was rejected
+    if predicted_class == 10:
+        return -1, confidence  # Return actual class 10 probability
+    
+    # Otherwise return the digit (0-9)
+    return predicted_class, confidence
 
 
 def main():
@@ -1981,21 +2002,15 @@ def main():
         default=20,
         help="Number of training epochs (default: 20)"
     )
-    parser.add_argument(
-        "--use-sigmoid",
-        action="store_true",
-        help="Use sigmoid activation instead of softmax (softmax is used by default)"
-    )
     
     args = parser.parse_args()
         
-    # Train the model
-    print("Starting digit classifier training...")
+    # Train the model (always uses softmax with 11 classes)
+    print("Starting digit classifier training with 11 classes (0-9 digits + 10 'not a digit')...")
     model = load_or_create_digit_classifier(
         classifier_model_path=args.model_path, 
         train_model=args.train_model,
-        num_epochs=args.epoch_count,
-        use_sigmoid=args.use_sigmoid
+        num_epochs=args.epoch_count
     )
     print("\nTraining complete!")
 
