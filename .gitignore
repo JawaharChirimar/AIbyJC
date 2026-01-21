@@ -10,6 +10,7 @@ DigitNN/data/1missing.jpeg
 DigitNN/data/autoencoder/
 DigitNN/data/font_digits/
 DigitNN/data/modelForDE/
+DigitNN/data/non-digits/
 node_modules/
 .vscode/
 DigitNN/test_scripts/
