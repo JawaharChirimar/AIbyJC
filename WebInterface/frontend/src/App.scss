@@ -242,7 +242,7 @@ main {
 .result-item .digit {
     font-size: 2em;
     font-weight: 700;
-    color: #667eea;
+    color: #0a6e0b;
     margin-bottom: 8px;
 }
 
@@ -259,8 +259,8 @@ main {
 
 /* Low confidence warning (< 90%) */
 .result-item.low-confidence {
-    background: #ffe6e6 !important;
-    border-color: #f80303 !important;
+    background: #ffc379 !important;
+    border-color: #c67700 !important;
 }
 
 .result-item.low-confidence .digit {
@@ -269,6 +269,21 @@ main {
 
 .result-item.low-confidence .confidence-value {
     color: #cc0000 !important;
+}
+
+/* No digit (class 10) - deeper red */
+.result-item.no-digit {
+    background: rgb(255, 170, 170) !important;
+    border-color: #991607 !important;
+}
+
+.result-item.no-digit .digit {
+    color: #c0392b !important;
+    font-weight: 800 !important;
+}
+
+.result-item.no-digit .confidence-value {
+    color: #c0392b !important;
 }
 
 /* Scrollbar styling */
