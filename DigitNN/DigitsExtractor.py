@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 import cv2
 import numpy as np
-from DigitClassifierNN import load_or_create_digit_classifier, classify_digit
+from DigitClassifierALL import load_or_create_digit_classifier, classify_digit
 
 
 def create_output_directory():
@@ -337,8 +337,14 @@ background_mean=0, foreground_mean=255):
     open_kernel = np.ones((1, 1), np.uint8)
     cleaned = cv2.morphologyEx(closed, cv2.MORPH_OPEN, open_kernel, iterations=1)
     
-    # Ensure binary output
-    final = np.where(cleaned > 127, 255, 0).astype(np.uint8)
+    # Return grayscale instead of binary to preserve information for the model
+    # The model was trained on grayscale images (0-255), not binary
+    # Convert binary back to grayscale by using the cleaned binary as a mask
+    # and applying slight smoothing to create grayscale values
+    final_binary = np.where(cleaned > 127, 255, 0).astype(np.uint8)
+    
+    # Apply slight Gaussian blur to convert binary to grayscale (preserves edges but adds smoothness)
+    final = cv2.GaussianBlur(final_binary, (3, 3), 0.5)
     
     return final
 
@@ -540,7 +546,8 @@ classifier_model_path=None, classify_digits=False):
                 print(f"Warning: Classification failed for region {line_num}_{digit_num}: {e}")
         
         # Create filename: file_L_D.jpg (or file_L_D_classified_X.jpg if classifying)
-        if predicted_digit is not None:
+        # Handle both None (from sigmoid models) and -1 (from softmax 11-class model) as rejected
+        if predicted_digit is not None and predicted_digit != -1:
             filename = f"file_{line_num}_{digit_num}_classified_{predicted_digit}_conf_{confidence:.2f}.jpg"
         else:
             filename = f"file_{line_num}_{digit_num}.jpg"
@@ -550,7 +557,7 @@ classifier_model_path=None, classify_digits=False):
         # Save as JPEG
         cv2.imwrite(str(output_path), processed_region, [cv2.IMWRITE_JPEG_QUALITY, 95])
         
-        if predicted_digit is not None:
+        if predicted_digit is not None and predicted_digit != -1:
             print(f"Saved: {filename} (predicted: {predicted_digit}, confidence: {confidence:.2%})")
         else:
             print(f"Saved: {filename}")
