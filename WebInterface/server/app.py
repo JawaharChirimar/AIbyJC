@@ -6,23 +6,15 @@ Flask server for digit extraction and classification web interface.
 import os
 import sys
 from pathlib import Path
-import base64
 import cv2
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import io
 
 # Add the DigitNN directory to the path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "DigitNN"))
 
-from DigitsExtractor import (
-    detect_digits_with_contours,
-    sort_detections_by_reading_order,
-    extract_and_process_region,
-    detect_background_color_contours
-)
-from DigitClassifierALL import load_or_create_digit_classifier, classify_digit, sigmoid_accuracy
+from DigitsExtractor import process_image
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend
@@ -33,71 +25,25 @@ MODELS_BASE_DIR = Path(__file__).parent.parent.parent / "DigitNN" / "data" / "mo
 
 def process_image_for_api(image_array, classifier_model_path):
     """
-    Process image and return results as list of triplets.
+    Process image and return results as list of dicts.
     
     Args:
         image_array: numpy array of the image (BGR format)
         classifier_model_path: Path to classifier model (.keras file)
     
     Returns:
-        dict with 'error' key OR 'results' key containing list of triplets:
-        - Each triplet: {'image': base64_encoded_image, 'digit': int, 'confidence': float}
+        dict with 'error' key OR 'results' key containing list of dicts:
+        - Each dict: {'image': base64_encoded_image, 'digit': int, 'confidence': float}
     """
     try:
-        # Convert BGR to grayscale
-        image = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
-        image_height = image.shape[0]
-        
-        # Detect background and foreground colors
-        background_mean, foreground_mean = detect_background_color_contours(image)
-        
-        # Detect digits
-        detections = detect_digits_with_contours(image, min_area=30)
-        
-        if not detections:
-            return {'error': 'No digit regions found. Please ensure the image contains visible handwritten digits.'}
-        
-        # Sort detections in reading order
-        sorted_detections = sort_detections_by_reading_order(detections, image_height)
-        
-        # Load classifier model
-        try:
-            classifier_model = load_or_create_digit_classifier(
-                train_model=False,
-                classifier_model_path=classifier_model_path
-            )
-        except Exception as e:
-            return {'error': f'Could not load classifier model: {str(e)}'}
-        
-        # Process each region and collect results
-        results = []
-        for line_num, digit_num, box in sorted_detections:
-            # Extract and process region
-            processed_region = extract_and_process_region(image, box, background_mean=background_mean, foreground_mean=foreground_mean)
-            
-            # Classify digit
-            try:
-                predicted_digit, confidence = classify_digit(classifier_model, processed_region)
-            except Exception as e:
-                return {'error': f'Classification failed: {str(e)}'}
-            
-            # Encode image as base64
-            # Convert to JPEG in memory
-            success, buffer = cv2.imencode('.jpg', processed_region, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            if not success:
-                return {'error': 'Failed to encode processed image'}
-            
-            # Convert to base64
-            image_base64 = base64.b64encode(buffer).decode('utf-8')
-            
-            results.append({
-                'image': image_base64,
-                'digit': int(predicted_digit),
-                'confidence': float(confidence)
-            })
-        
-        return {'results': results}
-    
+        # Use the refactored process_image function with return_results=True
+        result = process_image(
+            image_array=image_array,
+            classifier_model_path=classifier_model_path,
+            classify_digits=True,
+            return_results=True
+        )
+        return result
     except Exception as e:
         return {'error': f'Processing error: {str(e)}'}
 

@@ -468,69 +468,107 @@ background_mean=0):
 
 
 
-def process_image(input_path, output_dir=None, 
-classifier_model_path=None, classify_digits=False):
+def process_image(input_path=None, output_dir=None, 
+classifier_model_path=None, classify_digits=False, 
+image_array=None, return_results=False):
     """
-    Process input image with contour detection, extract digit regions, and save them.
+    Process input image with contour detection, extract digit regions, and save them or return results.
     
     Args:
-        input_path: Path to input JPEG file
-        output_dir: Output directory (created with timestamp if None)
-        classifier_model_path: Path to digit classifier model (optional)
-        classify_digits: Whether to classify digits using CNN
-    """
-    # Load image
-    if not os.path.exists(input_path):
-        print(f"Error: Input file not found: {input_path}")
-        sys.exit(1)
+        input_path: Path to input JPEG file (required if image_array is None)
+        output_dir: Output directory (created with timestamp if None, required if return_results=False)
+        classifier_model_path: Path to digit classifier model (required if classify_digits=True)
+        classify_digits: Whether to classify digits using CNN (required if return_results=True)
+        image_array: numpy array of image in BGR format (optional, if provided, input_path is ignored)
+        return_results: If True, return list of dicts instead of saving files (default: False)
     
-    image2 = cv2.imread(input_path)
-    image = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
-    if image is None:
-        print(f"Error: Could not read image: {input_path}")
-        sys.exit(1)
+    Returns:
+        If return_results=True: dict with 'error' key OR 'results' key containing list of dicts:
+            - Each dict: {'image': base64_encoded_image, 'digit': int, 'confidence': float}
+        If return_results=False: None (saves files to disk)
+    """
+    import base64
+    
+    # Load image - either from array or file path
+    if image_array is not None:
+        # Image already provided as array (BGR format)
+        image = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
+    else:
+        # Load from file path (existing behavior)
+        if input_path is None:
+            if return_results:
+                return {'error': 'Either input_path or image_array must be provided'}
+            print("Error: Input file path is required")
+            sys.exit(1)
+        if not os.path.exists(input_path):
+            if return_results:
+                return {'error': f'Input file not found: {input_path}'}
+            print(f"Error: Input file not found: {input_path}")
+            sys.exit(1)
+        
+        image2 = cv2.imread(input_path)
+        image = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+        if image is None:
+            if return_results:
+                return {'error': f'Could not read image: {input_path}'}
+            print(f"Error: Could not read image: {input_path}")
+            sys.exit(1)
     
     image_height, image_width = image.shape[:2]
     
     # Detect background and foreground colors using contour-based detection
     background_mean, foreground_mean = detect_background_color_contours(image)
-    print(f"Background mean: {background_mean:.1f}, Foreground mean: {foreground_mean:.1f}")
+    if not return_results:
+        print(f"Background mean: {background_mean:.1f}, Foreground mean: {foreground_mean:.1f}")
     
     # Detect digits using contour-based detection
     detections = detect_digits_with_contours(image, min_area=30)
     
     if not detections:
+        error_msg = "No digit regions found. Please ensure the image contains visible handwritten digits."
+        if return_results:
+            return {'error': error_msg}
         print("Error: No digit regions found using contour detection.")
         print("Please try:")
         print("  1. Adjusting image preprocessing (ensure good contrast)")
         print("  2. Checking if the image contains visible handwritten digits")
         return
-    else:
+    
+    if not return_results:
         print(f"Found {len(detections)} potential digit regions using contour detection")
     
     # Sort detections in reading order
     sorted_detections = sort_detections_by_reading_order(detections, image_height)
     
-    # Create output directory
-    if output_dir is None:
-        output_dir = create_output_directory()
-    else:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+    # Create output directory (only needed if not returning results)
+    if not return_results:
+        if output_dir is None:
+            output_dir = create_output_directory()
+        else:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Output directory: {output_dir}")
     
-    print(f"Output directory: {output_dir}")
-    
-    # Load digit classifier if classification is requested
+    # Load digit classifier if classification is requested (required for return_results)
     classifier_model = None
-    if classify_digits:
-        try:
-            classifier_model = load_or_create_digit_classifier(train_model=False, classifier_model_path=classifier_model_path)
-        except Exception as e:
-            print(f"Warning: Could not load/create digit classifier: {e}")
-            print("Saving regions without classification...")
+    if classify_digits or return_results:
+        if classifier_model_path is None:
+            if return_results:
+                return {'error': 'classifier_model_path is required when return_results=True'}
+            print("Warning: classifier_model_path not provided, skipping classification")
             classify_digits = False
+        else:
+            try:
+                classifier_model = load_or_create_digit_classifier(train_model=False, classifier_model_path=classifier_model_path)
+            except Exception as e:
+                if return_results:
+                    return {'error': f'Could not load classifier model: {str(e)}'}
+                print(f"Warning: Could not load/create digit classifier: {e}")
+                print("Saving regions without classification...")
+                classify_digits = False
     
-    # Process and save each region
+    # Process each region
+    results = []
     for line_num, digit_num, box in sorted_detections:
         # Extract and process region
         processed_region = extract_and_process_region(image, box, 
@@ -539,30 +577,54 @@ classifier_model_path=None, classify_digits=False):
         # Classify digit if requested
         predicted_digit = None
         confidence = None
-        if classify_digits and classifier_model:
+        if (classify_digits or return_results) and classifier_model:
             try:
                 predicted_digit, confidence = classify_digit(classifier_model, processed_region)
             except Exception as e:
+                if return_results:
+                    return {'error': f'Classification failed: {str(e)}'}
                 print(f"Warning: Classification failed for region {line_num}_{digit_num}: {e}")
         
-        # Create filename: file_L_D.jpg (or file_L_D_classified_X.jpg if classifying)
-        # Handle both None (from sigmoid models) and -1 (from softmax 11-class model) as rejected
-        if predicted_digit is not None and predicted_digit != -1:
-            filename = f"file_{line_num}_{digit_num}_classified_{predicted_digit}_conf_{confidence:.2f}.jpg"
+        if return_results:
+            # Encode processed region (28x28 image that model saw) as base64
+            success, buffer = cv2.imencode('.jpg', processed_region, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if not success:
+                return {'error': 'Failed to encode processed image'}
+            
+            # Convert to base64
+            image_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            # Handle rejected digits (None or -1) - convert to -1 for API
+            digit_value = -1 if (predicted_digit is None or predicted_digit == -1) else int(predicted_digit)
+            
+            results.append({
+                'image': image_base64,
+                'digit': digit_value,
+                'confidence': float(confidence) if confidence is not None else 0.0
+            })
         else:
-            filename = f"file_{line_num}_{digit_num}.jpg"
-        
-        output_path = output_dir / filename
-        
-        # Save as JPEG
-        cv2.imwrite(str(output_path), processed_region, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        
-        if predicted_digit is not None and predicted_digit != -1:
-            print(f"Saved: {filename} (predicted: {predicted_digit}, confidence: {confidence:.2%})")
-        else:
-            print(f"Saved: {filename}")
+            # Save to file (existing behavior)
+            # Create filename: file_L_D.jpg (or file_L_D_classified_X.jpg if classifying)
+            # Handle both None (from sigmoid models) and -1 (from softmax 11-class model) as rejected
+            if predicted_digit is not None and predicted_digit != -1:
+                filename = f"file_{line_num}_{digit_num}_classified_{predicted_digit}_conf_{confidence:.2f}.jpg"
+            else:
+                filename = f"file_{line_num}_{digit_num}.jpg"
+            
+            output_path = output_dir / filename
+            
+            # Save as JPEG
+            cv2.imwrite(str(output_path), processed_region, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            
+            if predicted_digit is not None and predicted_digit != -1:
+                print(f"Saved: {filename} (predicted: {predicted_digit}, confidence: {confidence:.2%})")
+            else:
+                print(f"Saved: {filename}")
     
-    print(f"\nProcessing complete! Saved {len(sorted_detections)} digit regions to {output_dir}")
+    if return_results:
+        return {'results': results}
+    else:
+        print(f"\nProcessing complete! Saved {len(sorted_detections)} digit regions to {output_dir}")
 
 
 def main():
