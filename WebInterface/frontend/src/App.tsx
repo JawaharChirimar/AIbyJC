@@ -5,6 +5,8 @@ import "@fortawesome/fontawesome-free/css/all.css";
 import "App.scss";
 
 const API_BASE_URL = 'http://localhost:5001/api';
+//const API_BASE_URL = 'http://3.129.151.91:5001/api';
+
 
 interface Model {
 	path: string;
@@ -251,14 +253,14 @@ export class App extends Component<{}, AppState> {
 								)}
 								{results.map((result, index) => (
 									<div 
-										class={`result-item ${result.confidence < 0.6666 ? 'low-confidence' : ''}`}
+										class={`result-item ${result.digit === 10 ? 'no-digit' : result.confidence < 0.75 ? 'low-confidence' : ''}`}
 										key={index}
 									>
 										<img 
 											src={`data:image/jpeg;base64,${result.image}`} 
-											alt={`Digit ${result.digit}`}
+											alt={result.digit === 10 ? 'No digit' : `Digit ${result.digit}`}
 										/>
-										<div class="digit">{result.digit}</div>
+										<div class="digit">{result.digit === 10 ? 'NO DIGIT' : result.digit}</div>
 										<div class="confidence">
 											Confidence: <span class="confidence-value">{(result.confidence * 100).toFixed(1)}%</span>
 										</div>
