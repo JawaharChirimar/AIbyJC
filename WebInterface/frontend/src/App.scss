@@ -277,6 +277,12 @@ main {
     border-color: #991607 !important;
 }
 
+.result-item.valid-digit {
+    background: rgb(234, 255, 224) !important;
+    border-color: #009216 !important;
+}
+
+
 .result-item.no-digit .digit {
     color: #c0392b !important;
     font-weight: 800 !important;
