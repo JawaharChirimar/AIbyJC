@@ -351,7 +351,7 @@ background_mean=0, foreground_mean=255):
     
     # Apply Gaussian blur to create smooth grayscale transitions
     # Use (3, 3) kernel with sigma 0.5 to match Mac behavior
-    final = cv2.GaussianBlur(final_binary, (3, 3), 0.5)
+    final = cv2.GaussianBlur(final_binary, (3, 3), 0.6)
     
     # DEBUG: Check after blur
     unique_after = np.unique(final)
