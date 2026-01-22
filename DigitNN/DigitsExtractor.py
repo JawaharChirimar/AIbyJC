@@ -244,8 +244,6 @@ background_mean=0, foreground_mean=255):
     Returns:
         Processed 28x28 binary image
     """
-    import sys
-    print("DEBUG: extract_and_process_region called", file=sys.stderr, flush=True)
     x1, y1, x2, y2 = map(int, box)
     
     # Determine if digits are darker or lighter than background
@@ -341,149 +339,13 @@ background_mean=0, foreground_mean=255):
     
     # Return grayscale instead of binary to preserve information for the model
     # The model was trained on grayscale images (0-255), not binary
-    # Convert binary: white digits stay white (255), black background becomes dark grey
-    final_binary = np.where(cleaned > 127, 255, 30).astype(np.uint8)  # Black (0) -> dark grey (30)
+    # Convert binary back to grayscale by using the cleaned binary as a mask
+    # and applying slight smoothing to create grayscale values
+    final_binary = np.where(cleaned > 127, 255, 0).astype(np.uint8)
     
-    # DEBUG: Check before blur
-    import sys
-    unique_before = np.unique(final_binary)
-    print(f"DEBUG: Before blur - unique values: {len(unique_before)}, range: {unique_before.min()}-{unique_before.max()}, values: {unique_before[:10]}", file=sys.stderr, flush=True)
-    
-    # Apply Gaussian blur to create smooth grayscale transitions
-    # Use (3, 3) kernel with sigma 0.5 to match Mac behavior
-    final = cv2.GaussianBlur(final_binary, (3, 3), 0.6)
-    
-    # DEBUG: Check after blur
-    unique_after = np.unique(final)
-    print(f"DEBUG: After blur - unique values: {len(unique_after)}, range: {unique_after.min()}-{unique_after.max()}, sample values: {unique_after[:20]}", file=sys.stderr, flush=True)
-    
-    # DEBUG: Check if JPEG encoding affects it
-    success, buffer = cv2.imencode('.jpg', final, [cv2.IMWRITE_JPEG_QUALITY, 95])
-    if success:
-        decoded = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
-        unique_after_jpeg = np.unique(decoded)
-        print(f"DEBUG: After JPEG encode/decode - unique values: {len(unique_after_jpeg)}, range: {unique_after_jpeg.min()}-{unique_after_jpeg.max()}, sample values: {unique_after_jpeg[:20]}", file=sys.stderr, flush=True)
-    
-    return final
-
-
-def extract_and_process_region_grayscale(image, box, target_size=(28, 28), 
-background_mean=0, foreground_mean=255):
-    """
-    Extract region from image, scale to 28x28, and process while preserving grayscale throughout.
-    This version does NOT threshold to binary, keeping grayscale values for the model.
-    
-    Args:
-        image: Input image (BGR format from cv2)
-        box: Bounding box (x1, y1, x2, y2)
-        target_size: Target size (width, height)
-        background_mean: mean value of background (determined from full image)
-        foreground_mean: mean value of foreground/digits (determined from full image)
-    
-    Returns:
-        Processed 28x28 grayscale image (0-255, not binary)
-    """
-    x1, y1, x2, y2 = map(int, box)
-    
-    # Determine if digits are darker or lighter than background
-    digits_are_darker = foreground_mean < background_mean
-    
-    # Ensure coordinates are within image bounds
-    h, w = image.shape[:2]
-    x1 = max(0, x1)
-    y1 = max(0, y1)
-    x2 = min(w, x2)
-    y2 = min(h, y2)
-    
-    # Extract region
-    region = image[y1:y2, x1:x2]
-    
-    # Convert to grayscale if needed
-    if len(region.shape) == 3:
-        region = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
-    
-    # === STEP 1: Scale to 28x28 maintaining aspect ratio ===
-    region_h, region_w = region.shape[:2]
-    
-    # Skip very small regions
-    if region_h < 2 or region_w < 2:
-        # Return a blank 28x28 image
-        return np.zeros(target_size, dtype=np.uint8)
-    
-    # Leave margin for padding (digit centered with some border)
-    margin = 4
-    max_dim = max(region_h, region_w)
-    scale = (target_size[0] - margin) / max_dim
-    new_w = max(1, int(region_w * scale))
-    new_h = max(1, int(region_h * scale))
-    
-    # Resize maintaining aspect ratio
-    scaled = cv2.resize(region, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    
-    # Add padding to center and make it target_size
-    pad_h = (target_size[0] - new_h) // 2
-    pad_w = (target_size[1] - new_w) // 2
-    pad_h_remainder = (target_size[0] - new_h) % 2
-    pad_w_remainder = (target_size[1] - new_w) % 2
-    
-    # Pad with background color
-    pad_value = int(background_mean)
-    digit_28x28 = cv2.copyMakeBorder(
-        scaled,
-        top=pad_h,
-        bottom=pad_h + pad_h_remainder,
-        left=pad_w,
-        right=pad_w + pad_w_remainder,
-        borderType=cv2.BORDER_CONSTANT,
-        value=pad_value
-    )
-    
-    # === STEP 2: Apply transformations on 28x28 grayscale image (NO THRESHOLDING) ===
-    
-    # First, ensure MNIST/EMNIST format: white digits on black background
-    # If digits are darker than background, invert the image
-    if digits_are_darker:
-        # Invert: dark digits on light background -> light digits on dark background
-        digit_28x28 = 255 - digit_28x28
-    
-    # Very light noise reduction - minimal to avoid thickening
-    filtered = cv2.bilateralFilter(digit_28x28, 3, 30, 30)
-    
-    # Increase contrast to match EMNIST format (high contrast, uniform black background)
-    # Use percentile-based stretching to preserve digit structure
-    p20, p80 = np.percentile(filtered, (20, 80))
-    if p80 > p20:
-        # Map [p20, p80] to [0, 255] - gentler stretching to preserve shape
-        contrast_stretched = np.clip((filtered.astype(np.float32) - p20) * 255.0 / (p80 - p20), 0, 255).astype(np.uint8)
-    else:
-        contrast_stretched = filtered
-    
-    # Identify background using a lower threshold to avoid cutting digit strokes
-    # Use a percentile-based threshold instead of Otsu to be less aggressive
-    bg_threshold = np.percentile(contrast_stretched, 25)  # Bottom 25% are background
-    background_mask = contrast_stretched < bg_threshold
-    
-    # Light morphological closing on digit pixels only to reconnect cut strokes
-    # Create a mask for digit pixels
-    digit_mask = ~background_mask
-    if np.any(digit_mask):
-        # Apply closing only to digit region to reconnect broken strokes
-        kernel = np.ones((2, 2), np.uint8)
-        # Create temporary binary for closing
-        temp_binary = np.zeros_like(contrast_stretched)
-        temp_binary[digit_mask] = contrast_stretched[digit_mask]
-        closed = cv2.morphologyEx(temp_binary, cv2.MORPH_CLOSE, kernel, iterations=1)
-        # Blend closed result back into digit pixels only
-        contrast_stretched[digit_mask] = np.maximum(contrast_stretched[digit_mask], closed[digit_mask] * 0.7).astype(np.uint8)
-    
-    # Force all background pixels to uniform black (0)
-    # This ensures clean, uniform black background like EMNIST
-    contrast_stretched[background_mask] = 0
-    
-    # Skip LUT and morphological operations - they thicken strokes
-    # Just apply minimal smoothing to create smooth grayscale transitions
-    # Very light blur to preserve exact digit shape
-    final = cv2.GaussianBlur(contrast_stretched, (3, 3), 0.15)
+    # Apply Gaussian blur to convert binary to grayscale (preserves edges but adds smoothness)
+    # Use (3, 3) kernel with higher sigma for consistent results across platforms
+    final = cv2.GaussianBlur(final_binary, (3, 3), 0.5)
     
     return final
 
