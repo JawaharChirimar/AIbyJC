@@ -350,8 +350,8 @@ background_mean=0, foreground_mean=255):
     print(f"DEBUG: Before blur - unique values: {len(unique_before)}, range: {unique_before.min()}-{unique_before.max()}, values: {unique_before[:10]}", file=sys.stderr, flush=True)
     
     # Apply Gaussian blur to create smooth grayscale transitions
-    # Use (3, 3) kernel with higher sigma for consistent results across platforms
-    final = cv2.GaussianBlur(final_binary, (3, 3), 0.7)
+    # Use (3, 3) kernel with sigma 0.5 to match Mac behavior
+    final = cv2.GaussianBlur(final_binary, (3, 3), 0.5)
     
     # DEBUG: Check after blur
     unique_after = np.unique(final)
