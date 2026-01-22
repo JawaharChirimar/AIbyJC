@@ -342,9 +342,24 @@ background_mean=0, foreground_mean=255):
     # Convert binary: white digits stay white (255), black background becomes dark grey
     final_binary = np.where(cleaned > 127, 255, 30).astype(np.uint8)  # Black (0) -> dark grey (30)
     
+    # DEBUG: Check before blur
+    unique_before = np.unique(final_binary)
+    print(f"DEBUG: Before blur - unique values: {len(unique_before)}, range: {unique_before.min()}-{unique_before.max()}, values: {unique_before[:10]}")
+    
     # Apply Gaussian blur to create smooth grayscale transitions
     # Use (3, 3) kernel with higher sigma for consistent results across platforms
     final = cv2.GaussianBlur(final_binary, (3, 3), 0.7)
+    
+    # DEBUG: Check after blur
+    unique_after = np.unique(final)
+    print(f"DEBUG: After blur - unique values: {len(unique_after)}, range: {unique_after.min()}-{unique_after.max()}, sample values: {unique_after[:20]}")
+    
+    # DEBUG: Check if JPEG encoding affects it
+    success, buffer = cv2.imencode('.jpg', final, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    if success:
+        decoded = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
+        unique_after_jpeg = np.unique(decoded)
+        print(f"DEBUG: After JPEG encode/decode - unique values: {len(unique_after_jpeg)}, range: {unique_after_jpeg.min()}-{unique_after_jpeg.max()}, sample values: {unique_after_jpeg[:20]}")
     
     return final
 
