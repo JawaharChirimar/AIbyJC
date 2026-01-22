@@ -244,6 +244,8 @@ background_mean=0, foreground_mean=255):
     Returns:
         Processed 28x28 binary image
     """
+    import sys
+    print("DEBUG: extract_and_process_region called", file=sys.stderr, flush=True)
     x1, y1, x2, y2 = map(int, box)
     
     # Determine if digits are darker or lighter than background
@@ -343,8 +345,9 @@ background_mean=0, foreground_mean=255):
     final_binary = np.where(cleaned > 127, 255, 30).astype(np.uint8)  # Black (0) -> dark grey (30)
     
     # DEBUG: Check before blur
+    import sys
     unique_before = np.unique(final_binary)
-    print(f"DEBUG: Before blur - unique values: {len(unique_before)}, range: {unique_before.min()}-{unique_before.max()}, values: {unique_before[:10]}")
+    print(f"DEBUG: Before blur - unique values: {len(unique_before)}, range: {unique_before.min()}-{unique_before.max()}, values: {unique_before[:10]}", file=sys.stderr, flush=True)
     
     # Apply Gaussian blur to create smooth grayscale transitions
     # Use (3, 3) kernel with higher sigma for consistent results across platforms
@@ -352,14 +355,14 @@ background_mean=0, foreground_mean=255):
     
     # DEBUG: Check after blur
     unique_after = np.unique(final)
-    print(f"DEBUG: After blur - unique values: {len(unique_after)}, range: {unique_after.min()}-{unique_after.max()}, sample values: {unique_after[:20]}")
+    print(f"DEBUG: After blur - unique values: {len(unique_after)}, range: {unique_after.min()}-{unique_after.max()}, sample values: {unique_after[:20]}", file=sys.stderr, flush=True)
     
     # DEBUG: Check if JPEG encoding affects it
     success, buffer = cv2.imencode('.jpg', final, [cv2.IMWRITE_JPEG_QUALITY, 95])
     if success:
         decoded = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
         unique_after_jpeg = np.unique(decoded)
-        print(f"DEBUG: After JPEG encode/decode - unique values: {len(unique_after_jpeg)}, range: {unique_after_jpeg.min()}-{unique_after_jpeg.max()}, sample values: {unique_after_jpeg[:20]}")
+        print(f"DEBUG: After JPEG encode/decode - unique values: {len(unique_after_jpeg)}, range: {unique_after_jpeg.min()}-{unique_after_jpeg.max()}, sample values: {unique_after_jpeg[:20]}", file=sys.stderr, flush=True)
     
     return final
 
