@@ -343,8 +343,9 @@ background_mean=0, foreground_mean=255):
     # and applying slight smoothing to create grayscale values
     final_binary = np.where(cleaned > 127, 255, 0).astype(np.uint8)
     
-    # Apply slight Gaussian blur to convert binary to grayscale (preserves edges but adds smoothness)
-    final = cv2.GaussianBlur(final_binary, (3, 3), 0.5)
+    # Apply Gaussian blur to convert binary to grayscale (preserves edges but adds smoothness)
+    # Use (3, 3) kernel with higher sigma for consistent results across platforms
+    final = cv2.GaussianBlur(final_binary, (3, 3), 0.65)
     
     return final
 
