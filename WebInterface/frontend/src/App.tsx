@@ -259,7 +259,7 @@ export class App extends Component<{}, AppState> {
 											src={`data:image/jpeg;base64,${result.image}`} 
 											alt={result.digit === 10 ? 'No digit' : `Digit ${result.digit}`}
 										/>
-										<div class="digit">{result.digit === 10 ? 'NO DIGIT' : result.digit}</div>
+										<div class='digit'>{result.digit === 10 ? 'NO DIGIT' : result.digit}</div>
 										<div class="confidence">
 											Confidence: <span class="confidence-value">{(result.confidence * 100).toFixed(1)}%</span>
 										</div>

@@ -273,7 +273,7 @@ main {
 
 /* No digit (class 10) - deeper red */
 .result-item.no-digit {
-    background: rgb(255, 170, 170) !important;
+    background: rgb(255, 220, 220) !important;
     border-color: #991607 !important;
 }
 
@@ -285,7 +285,8 @@ main {
 
 .result-item.no-digit .digit {
     color: #c0392b !important;
-    font-weight: 800 !important;
+    font-size: 1.75em !important;
+    font-weight: 500 !important;
 }
 
 .result-item.no-digit .confidence-value {
