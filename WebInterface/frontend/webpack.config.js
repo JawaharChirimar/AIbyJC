@@ -1,4 +1,6 @@
+
 const path = require("path");
+const Dotenv = require("dotenv-webpack");
 
 const { CleanWebpackPlugin } = require("clean-webpack-plugin");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
@@ -72,7 +74,8 @@ module.exports = {
 			title: "Digit Classifier",
 			template: "./src/index.html",
 			publicPath: "/"
-		})
+		}),
+                new Dotenv()
 	],
 
 	resolve: {

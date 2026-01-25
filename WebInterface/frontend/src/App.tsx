@@ -4,8 +4,7 @@ import Select from "react-select";
 import "@fortawesome/fontawesome-free/css/all.css";
 import "App.scss";
 
-const API_BASE_URL = 'http://localhost:5001/api';
-//const API_BASE_URL = 'http://3.129.151.91:5001/api';
+const API_BASE_URL = process.env.DIGITNN_APP_API_URL || '/api';
 
 
 interface Model {
@@ -253,7 +252,7 @@ export class App extends Component<{}, AppState> {
 								)}
 								{results.map((result, index) => (
 									<div 
-										class={`result-item ${result.digit === 10 ? 'no-digit' : result.confidence < 0.75 ? 'low-confidence' : ''}`}
+										class={`result-item ${result.digit === 10 ? 'no-digit' : result.confidence < 0.75 ? 'low-confidence' : 'valid-digit'}`}
 										key={index}
 									>
 										<img 
