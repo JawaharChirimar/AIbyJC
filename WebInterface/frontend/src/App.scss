@@ -239,6 +239,17 @@ main {
     margin-right: auto;
 }
 
+.input-with-icon .clickable-icon {
+    cursor: pointer;
+    transition: color 0.2s, transform 0.2s;
+    color: #ff6262;
+}
+
+.input-with-icon .clickable-icon:hover {
+    color: #b10000;
+    transform: scale(1.15);
+}
+
 .result-item .digit {
     font-size: 2em;
     font-weight: 700;
