@@ -27,6 +27,7 @@ interface AppState {
 	models: ModelsByDirectory;
 	selectedModel: string;
 	selectedFile: File | null;
+	previewUrl: string | null;
 	results: ClassificationResult[];
 	error: string;
 	loading: boolean;
@@ -41,6 +42,7 @@ export class App extends Component<{}, AppState> {
 			models: {},
 			selectedModel: "",
 			selectedFile: null,
+			previewUrl: null,
 			results: [],
 			error: "",
 			loading: false,
@@ -51,6 +53,13 @@ export class App extends Component<{}, AppState> {
 
 	componentDidMount() {
 		this.loadModels();
+	}
+
+	componentWillUnmount() {
+		// Clean up preview URL when component unmounts
+		if (this.state.previewUrl) {
+			URL.revokeObjectURL(this.state.previewUrl);
+		}
 	}
 
 	loadModels = async () => {
@@ -82,26 +91,33 @@ export class App extends Component<{}, AppState> {
 		const target = event.target as HTMLInputElement;
 		const file = target.files?.[0];
 		
+		// Clean up previous preview URL
+		if (this.state.previewUrl) {
+			URL.revokeObjectURL(this.state.previewUrl);
+		}
+		
 		if (!file) {
-			this.setState({ selectedFile: null });
+			this.setState({ selectedFile: null, previewUrl: null });
 			return;
 		}
 		
 		if (!file.type.match(/^image\/(jpeg|jpg|png)$/)) {
 			alert('Please select a JPEG or PNG image file.');
 			target.value = '';
-			this.setState({ selectedFile: null });
+			this.setState({ selectedFile: null, previewUrl: null });
 			return;
 		}
 		
 		if (file.size > 2 * 1024 * 1024) {
 			alert('File size exceeds 2MB limit. Please select a smaller file.');
 			target.value = '';
-			this.setState({ selectedFile: null });
+			this.setState({ selectedFile: null, previewUrl: null });
 			return;
 		}
 		
-		this.setState({ selectedFile: file, error: "", showResults: false });
+		// Create preview URL
+		const previewUrl = URL.createObjectURL(file);
+		this.setState({ selectedFile: file, previewUrl, error: "", showResults: false });
 	};
 
 	handleModelChange = (value: string) => {
@@ -151,7 +167,7 @@ export class App extends Component<{}, AppState> {
 	};
 
 	render() {
-		const { models, selectedModel, selectedFile, results, error, loading, modelsLoading, showResults } = this.state;
+		const { models, selectedModel, selectedFile, previewUrl, results, error, loading, modelsLoading, showResults } = this.state;
 		const canClassify = selectedModel !== "" && selectedFile !== null;
 
 		// Convert models to react-select format with groups
@@ -204,7 +220,47 @@ export class App extends Component<{}, AppState> {
 
 						<div class="form-group">
 							<div class="input-with-icon">
-							<i class="fa-solid fa-file-image"></i>
+								<i 
+									class={`fa-solid ${previewUrl ? 'fa-eye clickable-icon' : 'fa-file-image'}`}
+									title={previewUrl ? "Click to view uploaded image in new tab" : ""}
+									onClick={() => {
+										if (previewUrl) {
+											const newWindow = window.open('', '_blank');
+											if (newWindow) {
+												newWindow.document.write(`
+													<!DOCTYPE html>
+													<html>
+														<head>
+															<title>Uploaded Image - ${selectedFile?.name || 'Image'}</title>
+															<style>
+																body {
+																	margin: 0;
+																	padding: 20px;
+																	display: flex;
+																	justify-content: center;
+																	align-items: center;
+																	min-height: 100vh;
+																	background: #f5f5f5;
+																}
+																img {
+																	max-width: 100%;
+																	height: auto;
+																	border: 2px solid #ddd;
+																	border-radius: 8px;
+																	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+																}
+															</style>
+														</head>
+														<body>
+															<img src="${previewUrl}" alt="Uploaded image" />
+														</body>
+													</html>
+												`);
+												newWindow.document.close();
+											}
+										}
+									}}
+								></i>
 								<label class="file-input-label" for="fileInput">
 									<input 
 										type="file" 
@@ -219,7 +275,7 @@ export class App extends Component<{}, AppState> {
 								</label>
 							</div>
 							<div class="file-info" id="fileInfo"></div>
-							<small style="margin-left: 2rem;">Image must be jpeg/png file under 2MB.</small>
+							<small style="margin-left: 2rem;">Jpeg/png image under 2MB.</small>
 						</div>
 
 						<button 
