@@ -15,3 +15,5 @@ node_modules/
 .vscode/
 DigitNN/test_scripts/
 Analysis/
+.env
+QuadraticFunction/
