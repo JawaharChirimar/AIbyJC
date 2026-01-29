@@ -1,20 +1,15 @@
-DigitNN/.DS_Store
-WebInterface/.DS_Store
-DigitNN/__pycache__
-DigitNN/DataManagement/__pycache__
-.DS_Store
-DigitNN/data/temp/
-DigitNN/data/DERun/
-DigitNN/data/MNIST/
-AIbyJCApp/AIbyJCApp.xcodeproj/project.xcworkspace/
-DigitNN/data/1missing.jpeg
-DigitNN/data/autoencoder/
-DigitNN/data/font_digits/
-DigitNN/data/modelForDE/
-DigitNN/data/non-digits/
-node_modules/
-.vscode/
-DigitNN/test_scripts/
-Analysis/
+#.env means environment variables file in all subdirectories
+# same for .DS_Store, .vscode/, __pycache__, node_modules/, dist/
 .env
+.DS_Store
+.vscode/
+__pycache__/
+node_modules/
+dist/
+
+AIbyJCApp/AIbyJCApp.xcodeproj/project.xcworkspace/
+
+DigitNN/data/
+DigitNN/test_scripts/
+
 QuadraticFunction/
