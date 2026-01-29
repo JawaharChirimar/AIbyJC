@@ -3,7 +3,7 @@
 DigitsExtractor.py
 
 Processes a JPEG image with handwritten digits using contour detection.
-Extracts each detected digit region, normalizes to 28x28 greyscale, and saves
+Extracts each detected digit region, normalizes to 64x64 greyscale, and saves
 as individual JPEG files with naming pattern: file_L_D.jpg
 where L = line number (0-indexed), D = digit number (1-indexed).
 
@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 import cv2
 import numpy as np
-from DigitClassifierALL import load_or_create_digit_classifier, classify_digit
+from DigitClassifierSoftMax11 import load_or_create_digit_classifier, classify_digit
 
 
 def create_output_directory():
@@ -229,10 +229,10 @@ def detect_digits_with_contours(image, min_area=50):
     return detections
 
 
-def extract_and_process_region(image, box, target_size=(28, 28), 
+def extract_and_process_region(image, box, target_size=(64, 64), 
 background_mean=0, foreground_mean=255):
     """
-    Extract region from image, scale to 28x28 first, then apply transformations.
+    Extract region from image, scale to 64x64 first, then apply transformations.
     
     Args:
         image: Input image (BGR format from cv2)
@@ -242,7 +242,7 @@ background_mean=0, foreground_mean=255):
         foreground_mean: mean value of foreground/digits (determined from full image)
     
     Returns:
-        Processed 28x28 binary image
+        Processed 64x64 binary image
     """
     x1, y1, x2, y2 = map(int, box)
     
@@ -263,12 +263,12 @@ background_mean=0, foreground_mean=255):
     if len(region.shape) == 3:
         region = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
     
-    # === STEP 1: Scale to 28x28 maintaining aspect ratio ===
+    # === STEP 1: Scale to 64x64 maintaining aspect ratio ===
     region_h, region_w = region.shape[:2]
     
     # Skip very small regions
     if region_h < 2 or region_w < 2:
-        # Return a blank 28x28 image
+        # Return a blank 64x64 image
         return np.zeros(target_size, dtype=np.uint8)
     
     # Leave margin for padding (digit centered with some border)
@@ -299,7 +299,7 @@ background_mean=0, foreground_mean=255):
         value=pad_value
     )
     
-    # === STEP 2: Apply transformations on 28x28 image ===
+    # === STEP 2: Apply transformations on 64x64 image ===
     
     # Light noise reduction
     filtered = cv2.bilateralFilter(digit_28x28, 5, 50, 50)
@@ -350,7 +350,7 @@ background_mean=0, foreground_mean=255):
     return final
 
 
-def extract_and_process_region_prev(image, box, target_size=(28, 28), 
+def extract_and_process_region_prev(image, box, target_size=(64, 64), 
 background_mean=0):
     """
     PREVIOUS VERSION: Extract region, transform, then resize multiple times.
@@ -362,7 +362,7 @@ background_mean=0):
         background_mean: mean value of background (determined from full image)
     
     Returns:
-        Processed 28x28 binary image
+        Processed 64x64 binary image
     """
     x1, y1, x2, y2 = map(int, box)
 
@@ -580,14 +580,14 @@ image_array=None, return_results=False):
         confidence = None
         if (classify_digits or return_results) and classifier_model:
             try:
-                predicted_digit, confidence = classify_digit(classifier_model, processed_region)
+                predicted_digit, confidence = classify_digit(classifier_model, processed_region, input_size=64)
             except Exception as e:
                 if return_results:
                     return {'error': f'Classification failed: {str(e)}'}
                 print(f"Warning: Classification failed for region {line_num}_{digit_num}: {e}")
         
         if return_results:
-            # Encode processed region (28x28 image that model saw) as base64
+            # Encode processed region (64x64 image that model saw) as base64
             success, buffer = cv2.imencode('.jpg', processed_region, [cv2.IMWRITE_JPEG_QUALITY, 95])
             if not success:
                 return {'error': 'Failed to encode processed image'}

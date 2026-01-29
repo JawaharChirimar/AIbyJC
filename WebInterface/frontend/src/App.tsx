@@ -308,7 +308,7 @@ export class App extends Component<{}, AppState> {
 								)}
 								{results.map((result, index) => (
 									<div 
-										class={`result-item ${result.digit === 10 ? 'no-digit' : result.confidence < 0.75 ? 'low-confidence' : 'valid-digit'}`}
+										class={`result-item ${result.digit === 10 ? 'no-digit' : result.confidence < 0.599999999 ? 'low-confidence' : 'valid-digit'}`}
 										key={index}
 									>
 										<img 
