@@ -9,6 +9,8 @@ dist/
 
 AIbyJCApp/AIbyJCApp.xcodeproj/project.xcworkspace/
 
+Analysis/
+
 DigitNN/data/
 DigitNN/test_scripts/
 
