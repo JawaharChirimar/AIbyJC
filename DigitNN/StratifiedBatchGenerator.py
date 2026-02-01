@@ -41,80 +41,94 @@ def create_stratified_batch_generator(x_data, y_data, batch_size=128, num_classe
         class_indices[class_idx] = np.where(y_data == class_idx)[0]
         print(f"  Class {class_idx}: {len(class_indices[class_idx]):,} samples")
     
-    # Calculate samples per batch: 128 / 11 = 11.636...
-    # 7 classes get 12 samples, 4 classes get 11 samples
-    samples_per_class_high = 12
-    samples_per_class_low = 11
-    num_classes_high = 7  # 7 classes get 12
-    num_classes_low = 4   # 4 classes get 11
-    # Total: 7×12 + 4×11 = 84 + 44 = 128 ✓
+    # Calculate samples per batch dynamically based on num_classes and batch_size
+    # Example: 10 classes, batch_size=64 → 64/10 = 6.4 → 4 classes get 7, 6 classes get 6
+    # Example: 11 classes, batch_size=128 → 128/11 = 11.636... → 7 classes get 12, 4 classes get 11
+    samples_per_class_base = batch_size // num_classes  # Floor division
+    remainder = batch_size % num_classes  # How many extra samples to distribute
+    
+    samples_per_class_low = samples_per_class_base
+    samples_per_class_high = samples_per_class_base + 1
+    num_classes_high = remainder  # Classes that get the extra sample
+    num_classes_low = num_classes - remainder  # Classes that get base count
+    
+    # Verify calculation
+    total = num_classes_high * samples_per_class_high + num_classes_low * samples_per_class_low
+    assert total == batch_size, f"Batch size calculation error: {total} != {batch_size}"
     
     print(f"\nStratified batch composition:")
-    print(f"  7 classes: {samples_per_class_high} samples each")
-    print(f"  4 classes: {samples_per_class_low} samples each")
-    print(f"  Total: {num_classes_high * samples_per_class_high + num_classes_low * samples_per_class_low} (exact)")
-    print(f"  Selection of which classes get 12 vs 11 is random per batch")
+    if num_classes_high > 0:
+        print(f"  {num_classes_high} classes: {samples_per_class_high} samples each")
+    if num_classes_low > 0:
+        print(f"  {num_classes_low} classes: {samples_per_class_low} samples each")
+    print(f"  Total: {total} (exact batch_size)")
+    print(f"  Selection of which classes get {samples_per_class_high} vs {samples_per_class_low} is random per batch")
     
-    # Track current position in each class's indices
-    class_positions = {i: 0 for i in range(num_classes)}
+    # Find minimum class count to ensure true balance
+    min_class_count = min(len(class_indices[class_idx]) for class_idx in range(num_classes))
+    balanced_samples_per_epoch = min_class_count * num_classes
+    
+    print(f"\nBalanced stratified sampling:")
+    print(f"  Minimum class count: {min_class_count:,}")
+    print(f"  Samples per epoch: {balanced_samples_per_epoch:,} ({min_class_count:,} per class)")
+    print(f"  Batches per epoch: {balanced_samples_per_epoch // batch_size}")
     
     def stratified_generator():
-        """Generator that yields stratified batches."""
-        nonlocal class_positions
+        """Generator that yields stratified batches with true balance."""
         
         while True:
-            # Shuffle each class's indices at start of each epoch
+            # At start of each epoch, randomly sample min_class_count from each class
+            epoch_indices = {}
             for class_idx in range(num_classes):
-                np.random.shuffle(class_indices[class_idx])
-                class_positions[class_idx] = 0
+                # Randomly sample min_class_count indices from this class
+                all_class_indices = class_indices[class_idx]
+                sampled_indices = np.random.choice(all_class_indices, size=min_class_count, replace=False)
+                # Shuffle the sampled indices for this epoch
+                np.random.shuffle(sampled_indices)
+                epoch_indices[class_idx] = sampled_indices
+            
+            # Calculate batches for this epoch
+            batches_per_epoch = balanced_samples_per_epoch // batch_size
+            class_positions = {i: 0 for i in range(num_classes)}
             
             # Generate batches for this epoch
-            batches_in_epoch = 0
-            max_batches = n_samples // batch_size
-            
-            for _ in range(max_batches):
+            for _ in range(batches_per_epoch):
                 batch_indices = []
                 
-                # Randomly select which 7 classes get 12 samples (rest get 11)
+                # Randomly select which classes get the higher sample count (rest get lower)
                 all_classes = list(range(num_classes))
                 np.random.shuffle(all_classes)
-                classes_high = all_classes[:num_classes_high]  # 7 classes get 12
-                classes_low = all_classes[num_classes_high:]    # 4 classes get 11
+                classes_high = all_classes[:num_classes_high]  # Classes that get samples_per_class_high
+                classes_low = all_classes[num_classes_high:]    # Classes that get samples_per_class_low
                 
-                # Sample from each class
+                # Sample from each class's epoch indices
                 for class_idx in range(num_classes):
-                    indices = class_indices[class_idx]
+                    indices = epoch_indices[class_idx]
                     pos = class_positions[class_idx]
                     
                     # Determine how many samples this class gets
                     if class_idx in classes_high:
-                        samples_needed = samples_per_class_high  # 12
+                        samples_needed = samples_per_class_high
                     else:
-                        samples_needed = samples_per_class_low   # 11
+                        samples_needed = samples_per_class_low
                     
-                    # If we've exhausted this class, reshuffle and reset
-                    if pos >= len(indices):
-                        np.random.shuffle(indices)
-                        pos = 0
-                        class_positions[class_idx] = 0
-                    
-                    # Take samples
-                    end_pos = min(pos + samples_needed, len(indices))
-                    batch_indices.extend(indices[pos:end_pos])
-                    class_positions[class_idx] = end_pos
-                    
-                    # If we didn't get enough, cycle back
-                    if end_pos - pos < samples_needed:
-                        needed = samples_needed - (end_pos - pos)
-                        batch_indices.extend(indices[:needed])
-                        class_positions[class_idx] = needed
+                    # Take samples (cycle if needed)
+                    end_pos = pos + samples_needed
+                    if end_pos <= len(indices):
+                        batch_indices.extend(indices[pos:end_pos])
+                        class_positions[class_idx] = end_pos
+                    else:
+                        # Wrap around if we exceed (shouldn't happen with balanced sampling, but handle gracefully)
+                        batch_indices.extend(indices[pos:])
+                        remaining = end_pos - len(indices)
+                        batch_indices.extend(indices[:remaining])
+                        class_positions[class_idx] = remaining
                 
                 # Shuffle the batch to mix classes
                 np.random.shuffle(batch_indices)
                 
                 # Yield batch
                 yield x_data[batch_indices], y_data[batch_indices]
-                batches_in_epoch += 1
     
     return stratified_generator
 

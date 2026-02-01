@@ -499,7 +499,7 @@ class ImageDataGeneratorWithAugmentation:
                  thick_prob=THICK_PROB,
                  erasure_prob=ERASURE_PROB,
                  breaks_prob=BREAKS_PROB,
-                 num_classes=11,
+                 num_classes=10,
                  non_digit_class=10):
         """
         Initialize the generator.
@@ -514,9 +514,24 @@ class ImageDataGeneratorWithAugmentation:
             thick_prob: probability of thickening (default 0.10)
             erasure_prob: probability of pixel erasure (default 0.10)
             breaks_prob: probability of stroke breaks (default 0.10)
-            num_classes: total number of classes (default 11: 0-9 + non-digit)
-            non_digit_class: class index for non-digits (default 10)
+            num_classes: total number of classes (default 10 for SoftMax10: 0-9 only)
+                        Must be 10 or 11. If 11, enables non-digit handling for class 10.
+            non_digit_class: class index for non-digits (default 10, only used if num_classes=11)
         """
+        # =====================================================================
+        # VALIDATION: Derive non_digit from num_classes
+        # =====================================================================
+        if num_classes == 10:
+            non_digit = False
+        elif num_classes == 11:
+            non_digit = True
+        else:
+            raise ValueError(
+                f"num_classes must be 10 or 11, but got {num_classes}. "
+                f"Use num_classes=10 for SoftMax10 (0-9 only) or "
+                f"num_classes=11 for SoftMax11 (0-9 + non-digit class 10)"
+            )
+        
         self.x_data = x_data
         self.y_data = y_data
         self.is_google_fonts = is_google_fonts if is_google_fonts is not None else np.zeros(len(x_data), dtype=bool)
@@ -527,7 +542,8 @@ class ImageDataGeneratorWithAugmentation:
         self.erasure_prob = erasure_prob
         self.breaks_prob = breaks_prob
         self.num_classes = num_classes
-        self.non_digit_class = non_digit_class
+        self.non_digit = non_digit  # Automatically calculated from num_classes
+        self.non_digit_class = non_digit_class if non_digit else None
         
         # Organize indices by class
         self.class_indices = {}
@@ -630,6 +646,76 @@ class ImageDataGeneratorWithAugmentation:
         
         return result, effects
     
+    def _process_batch_indices(self, batch_indices, augment_mask):
+        """
+        Process a batch of indices through augmentation pipeline.
+        
+        Args:
+            batch_indices: List/array of indices to process
+            augment_mask: Boolean array indicating which samples should be augmented
+        
+        Returns:
+            Tuple of (batch_x_aug, batch_y_aug) as numpy arrays
+        """
+        batch_x_aug = []
+        batch_y_aug = []
+        
+        for idx in batch_indices:
+            img = self.x_data[idx]
+            label = self.y_data[idx]
+            is_gf = self.is_google_fonts[idx]
+            should_augment = augment_mask[idx]
+            class_idx = int(label)
+            
+            # Google Fonts: never augment
+            if is_gf:
+                processed, _ = self._apply_post_processing(img)
+                batch_x_aug.append(processed)
+                batch_y_aug.append(label)
+                self.epoch_stats['skipped_google_fonts'] += 1
+                self.epoch_stats['images_original'] += 1
+                continue
+            
+            if should_augment:
+                # Skip blank non-digit images (matching PregenAugmentedData.py)
+                if self.non_digit and class_idx == self.non_digit_class and is_blank_image(img):
+                    batch_x_aug.append(img)
+                    batch_y_aug.append(label)
+                    self.epoch_stats['skipped_non_digits'] += 1
+                    self.epoch_stats['images_original'] += 1
+                    continue
+                
+                # Non-digits: skip geometric augmentation (treat like Google Fonts)
+                if self.non_digit and class_idx == self.non_digit_class:
+                    # Apply full post-processing (same as Google Fonts)
+                    processed, _ = self._apply_post_processing(img)
+                    batch_x_aug.append(processed)
+                    batch_y_aug.append(label)
+                    self.epoch_stats['skipped_non_digits'] += 1
+                    self.epoch_stats['images_original'] += 1
+                    continue
+                
+                # Augment: original + 5 variations = 6 total
+                augmented = self._augment_image(img, label)
+                for aug_img, aug_label in augmented:
+                    batch_x_aug.append(aug_img)
+                    batch_y_aug.append(aug_label)
+                if class_idx < len(self.epoch_stats['by_class']):
+                    self.epoch_stats['by_class'][class_idx]['augmented'] += 6
+            else:
+                # Just apply post-processing (non-augmented samples get full post-processing, including non-digits)
+                processed, _ = self._apply_post_processing(img)
+                batch_x_aug.append(processed)
+                batch_y_aug.append(label)
+                self.epoch_stats['images_original'] += 1
+                if class_idx < len(self.epoch_stats['by_class']):
+                    self.epoch_stats['by_class'][class_idx]['original'] += 1
+        
+        batch_x_aug = np.array(batch_x_aug)
+        batch_y_aug = np.array(batch_y_aug)
+        
+        return batch_x_aug, batch_y_aug
+    
     def _augment_image(self, img_array, label):
         """
         Generate augmented versions of a single image.
@@ -698,20 +784,15 @@ class ImageDataGeneratorWithAugmentation:
         Augments per-batch instead of building entire epoch in memory.
         
         Args:
-            batch_size: number of samples per batch
+            batch_size: number of samples per batch (input samples, before augmentation)
             shuffle: whether to shuffle data each epoch
         
         Yields:
-            (batch_x, batch_y) tuples
+            (batch_x, batch_y) tuples (may be larger than batch_size after augmentation)
         """
         n_samples = len(self.x_data)
         
         while True:  # Infinite generator for keras fit()
-            # Build epoch indices - decide which samples get augmented
-            indices = np.arange(n_samples)
-            if shuffle:
-                np.random.shuffle(indices)
-            
             # Mark which samples to augment (by index)
             augment_mask = np.zeros(n_samples, dtype=bool)
             for class_idx in range(self.num_classes):
@@ -723,68 +804,18 @@ class ImageDataGeneratorWithAugmentation:
                 aug_selection = np.random.choice(class_indices, num_to_augment, replace=False)
                 augment_mask[aug_selection] = True
             
+            # Standard random shuffle
+            indices = np.arange(n_samples)
+            if shuffle:
+                np.random.shuffle(indices)
+            
             # Process in batches
             for start_idx in range(0, n_samples, batch_size):
                 end_idx = min(start_idx + batch_size, n_samples)
                 batch_indices = indices[start_idx:end_idx]
                 
-                batch_x_aug = []
-                batch_y_aug = []
-                
-                for idx in batch_indices:
-                    img = self.x_data[idx]
-                    label = self.y_data[idx]
-                    is_gf = self.is_google_fonts[idx]
-                    should_augment = augment_mask[idx]
-                    class_idx = int(label)
-                    
-                    # Google Fonts: never augment
-                    if is_gf:
-                        processed, _ = self._apply_post_processing(img)
-                        batch_x_aug.append(processed)
-                        batch_y_aug.append(label)
-                        self.epoch_stats['skipped_google_fonts'] += 1
-                        self.epoch_stats['images_original'] += 1
-                        continue
-                    
-                    if should_augment:
-                        # Skip blank non-digit images (matching PregenAugmentedData.py)
-                        if class_idx == self.non_digit_class and is_blank_image(img):
-                            batch_x_aug.append(img)
-                            batch_y_aug.append(label)
-                            self.epoch_stats['skipped_non_digits'] += 1
-                            self.epoch_stats['images_original'] += 1
-                            continue
-                        
-                        # Non-digits: skip geometric augmentation (treat like Google Fonts)
-                        if class_idx == self.non_digit_class:
-                            # Apply full post-processing (same as Google Fonts)
-                            processed, _ = self._apply_post_processing(img)
-                            batch_x_aug.append(processed)
-                            batch_y_aug.append(label)
-                            self.epoch_stats['skipped_non_digits'] += 1
-                            self.epoch_stats['images_original'] += 1
-                            continue
-                        
-                        # Augment: original + 5 variations = 6 total
-                        augmented = self._augment_image(img, label)
-                        for aug_img, aug_label in augmented:
-                            batch_x_aug.append(aug_img)
-                            batch_y_aug.append(aug_label)
-                        if class_idx < len(self.epoch_stats['by_class']):
-                            self.epoch_stats['by_class'][class_idx]['augmented'] += 6
-                    else:
-                        # Just apply post-processing (non-augmented samples get full post-processing, including non-digits)
-                        processed, _ = self._apply_post_processing(img)
-                        batch_x_aug.append(processed)
-                        batch_y_aug.append(label)
-                        self.epoch_stats['images_original'] += 1
-                        if class_idx < len(self.epoch_stats['by_class']):
-                            self.epoch_stats['by_class'][class_idx]['original'] += 1
-                
-                batch_x_aug = np.array(batch_x_aug)
-                batch_y_aug = np.array(batch_y_aug)
-                
+                # Process this batch
+                batch_x_aug, batch_y_aug = self._process_batch_indices(batch_indices, augment_mask)
                 yield batch_x_aug, batch_y_aug
     
     def on_epoch_end(self):

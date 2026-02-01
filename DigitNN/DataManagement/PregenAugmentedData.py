@@ -171,7 +171,9 @@ def augment_and_save(force=False, image_size=28):
         thin_prob=0.10,
         thick_prob=0.10,
         erasure_prob=0.10,
-        breaks_prob=0.10
+        breaks_prob=0.10,
+        num_classes=11,      # PregenAugmentedData includes non-digits
+        non_digit_class=10   # Explicit for clarity
     )
     
     # Collect all augmented data from one epoch

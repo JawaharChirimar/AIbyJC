@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 import cv2
 import numpy as np
-from DigitClassifierSoftMax11 import load_or_create_digit_classifier, classify_digit
+from DigitClassifierSoftMax10 import load_or_create_digit_classifier, classify_digit, BalancedLoss
 
 
 def create_output_directory():
