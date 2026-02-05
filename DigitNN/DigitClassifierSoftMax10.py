@@ -467,18 +467,42 @@ def load_and_combine_datasets(input_size=28, use_mnist=True, use_usps=False, use
     return x_train, y_train, x_test, y_test, is_google_fonts_train
 
 
-def load_or_create_digit_classifier(classifier_model_path=None, 
-train_model=True, num_epochs=20, use_stratified=False, input_size=28, initial_model_path=None,
-use_mnist=True, use_usps=False, use_ardis=False, use_custom_one=False, use_augment=False,
-use_balanced_loss=False, lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=32):
+def load_digit_classifier(classifier_model_path):
+    """
+    Load a pre-trained digit classifier.
+    """
+    if classifier_model_path is None or classifier_model_path == '' or not classifier_model_path:
+        raise ValueError("load_digit_classifier:classifier_model_path must be provided when train_model=False")
+    
+    classifier_model_path = str(classifier_model_path)  # Convert Path to string if needed
+    if not os.path.exists(classifier_model_path):
+        raise ValueError(f"load_digit_classifier:Model file not found: {classifier_model_path}.")
+    
+    try:
+        print(f"Loading digit classifier from: {classifier_model_path}")
+        # Provide custom objects in case model was saved with BalancedLoss
+        model = keras.models.load_model(
+            classifier_model_path,
+            custom_objects={'BalancedLoss': BalancedLoss}
+        )
+        print("Digit classifier loaded successfully")
+
+        return model  
+    except Exception as e:
+        raise ValueError(f"load_digit_classifier:Cannot load model from {classifier_model_path}: {e}. Set train_model=True to create a new model.")
+
+    return None
+
+def load_or_create_digit_classifier( 
+    num_epochs=20, use_stratified=False, input_size=28, initial_model_path=None,
+    use_mnist=True, use_usps=False, use_ardis=False, use_custom_one=False, use_augment=False,
+    use_balanced_loss=False, lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=32):
     """
     Load a pre-trained digit classifier or create/train a new one.
     
     Uses MNIST as base dataset with optional additional datasets and augmentation.
     
     Args:
-        classifier_model_path: Path to save the trained model (.keras file)
-        train_model: Whether to train a new model (True) or load existing (False)
         num_epochs: Number of training epochs (default: 20)
         use_stratified: Use stratified batch sampling (default: False)
         input_size: Image size (28 or 64, default: 28)
@@ -497,32 +521,7 @@ use_balanced_loss=False, lambda_weight=0.5, learning_rate=0.001, neurons_in_dens
     Returns:
         Trained Keras model for digit classification
     """
-
-    print("===========train_model: ", train_model)
-    print("===========classifier_model_path: ", classifier_model_path)
     
-    # CRITICAL: If train_model is False, we MUST load an existing model - do NOT train
-    # Return early - never reach training code below
-    if not train_model:
-        if classifier_model_path is None or classifier_model_path == '' or not classifier_model_path:
-            raise ValueError("classifier_model_path must be provided when train_model=False")
-        
-        classifier_model_path = str(classifier_model_path)  # Convert Path to string if needed
-        if not os.path.exists(classifier_model_path):
-            raise ValueError(f"Model file not found: {classifier_model_path}. Cannot load model when train_model=False.")
-        
-        try:
-            print(f"Loading digit classifier from: {classifier_model_path}")
-            # Include BalancedLoss in custom_objects in case model was saved with it
-            custom_objects = {'BalancedLoss': BalancedLoss}
-            model = keras.models.load_model(classifier_model_path, custom_objects=custom_objects)
-            print("Digit classifier loaded successfully - RETURNING, will NOT train")
-            return model  # RETURN HERE - DO NOT CONTINUE TO TRAINING CODE BELOW
-        except Exception as e:
-            raise ValueError(f"Cannot load model from {classifier_model_path}: {e}. Set train_model=True to create a new model.")
-    
-    # Only reach here if train_model=True - we're going to train a new model
-    print("DEBUG: train_model is True, proceeding to training")
     # Create the run directory now
     # Create timestamped directory for model checkpoints
     base_dir = DATA_DIR / "modelForDE"
@@ -544,7 +543,9 @@ use_balanced_loss=False, lambda_weight=0.5, learning_rate=0.001, neurons_in_dens
         try:
             # Include BalancedLoss in custom_objects in case model was saved with it
             custom_objects = {'BalancedLoss': BalancedLoss}
-            model = keras.models.load_model(initial_model_path, custom_objects=custom_objects)
+            model = keras.models.load_model(
+                initial_model_path, 
+                custom_objects=custom_objects)
             print(f"  Initial model loaded successfully")
             # Recompile with new learning rate and loss function settings
             if use_balanced_loss:
@@ -1013,7 +1014,7 @@ def classify_digit(classifier_model, digit_image, input_size=28):
     confidence = float(predictions[0][predicted_class])
     
     # Return the digit (0-9)
-    return predicted_class, confidence
+    return predicted_class, confidence, None
 
 
 def main():
@@ -1024,12 +1025,6 @@ def main():
     
     parser = argparse.ArgumentParser(
         description="Train a digit classifier on MNIST dataset"
-    )
-    parser.add_argument(
-        "-m", "--model-path",
-        type=str,
-        default=None,
-        help="Path to save the trained model (.keras file). Default: ~/.digit_classifier_mnist.keras"
     )
     parser.add_argument(
         "--train-model",
@@ -1109,43 +1104,45 @@ def main():
     # Determine input size
     input_size = args.size
         
-    # Train the model (always uses softmax with 10 classes)
-    print(f"Starting digit classifier training with 10 classes (digits 0-9 only)...")
-    print(f"Input image size: {input_size}x{input_size}")
-    print(f"Datasets: MNIST (base)", end="")
-    if args.get_USPS:
-        print(" + USPS", end="")
-    if args.get_ARDIS:
-        print(" + ARDIS", end="")
-    if args.get_CustomONE:
-        print(" + CustomOne", end="")
-    print()
-    print(f"Data augmentation: {'ENABLED' if args.augment else 'DISABLED'}")
-    print(f"Balanced loss (training): {'ENABLED' if args.balanced_loss else 'DISABLED'}")
-    if args.balanced_loss:
-        print(f"  Lambda weight: {args.lambda_weight}")
-    print(f"Learning rate: {args.learning_rate}")
-    print(f"Dense layer neurons: {args.dense_layer}")
-    
-    model = load_or_create_digit_classifier(
-        classifier_model_path=args.model_path, 
-        train_model=args.train_model,
-        use_stratified=args.stratified,
-        num_epochs=args.epoch_count,
-        input_size=input_size,
-        initial_model_path=args.initial_model,
-        use_mnist=True,  # Always use MNIST
-        use_usps=args.get_USPS,
-        use_ardis=args.get_ARDIS,
-        use_custom_one=args.get_CustomONE,
-        use_augment=args.augment,
-        use_balanced_loss=args.balanced_loss,
-        lambda_weight=args.lambda_weight,
-        learning_rate=args.learning_rate,
-        neurons_in_dense_layer=args.dense_layer
-    )
-    print("\nTraining complete!")
 
+    # Train the model (always uses softmax with 10 classes)
+    if args.train_model:
+        print(f"Starting digit classifier training with 10 classes (digits 0-9 only)...")
+        print(f"Input image size: {input_size}x{input_size}")
+        print(f"Datasets: MNIST (base)", end="")
+        if args.get_USPS:
+            print(" + USPS", end="")
+        if args.get_ARDIS:
+            print(" + ARDIS", end="")
+        if args.get_CustomONE:
+            print(" + CustomOne", end="")
+        print()
+        print(f"Data augmentation: {'ENABLED' if args.augment else 'DISABLED'}")
+        print(f"Balanced loss (training): {'ENABLED' if args.balanced_loss else 'DISABLED'}")
+        if args.balanced_loss:
+            print(f"  Lambda weight: {args.lambda_weight}")
+        print(f"Learning rate: {args.learning_rate}")
+        print(f"Dense layer neurons: {args.dense_layer}")
+        
+        model = load_or_create_digit_classifier(
+            use_stratified=args.stratified,
+            num_epochs=args.epoch_count,
+            input_size=input_size,
+            initial_model_path=args.initial_model,
+            use_mnist=True,  # Always use MNIST
+            use_usps=args.get_USPS,
+            use_ardis=args.get_ARDIS,
+            use_custom_one=args.get_CustomONE,
+            use_augment=args.augment,
+            use_balanced_loss=args.balanced_loss,
+            lambda_weight=args.lambda_weight,
+            learning_rate=args.learning_rate,
+            neurons_in_dense_layer=args.dense_layer
+        )
+        print("\nTraining complete!")
+
+    print(f"Please specify --train-model to train a new model")
+    return 3
 
 if __name__ == "__main__":
     main()

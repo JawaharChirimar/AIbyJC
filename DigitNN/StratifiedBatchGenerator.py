@@ -142,8 +142,8 @@ if __name__ == "__main__":
     
     # Create synthetic data
     np.random.seed(42)
-    n_samples = 10000
-    n_digits_per_class = 900  # 900 * 10 = 9000 digits
+    n_samples = 11000
+    n_digits_per_class = 1000  # 1000 * 10 = 9000 digits
     n_non_digits = 1000  # 1000 non-digits
     
     # Create labels

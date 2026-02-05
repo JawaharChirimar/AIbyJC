@@ -15,51 +15,95 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-import albumentations as A
 
-# Import augmentation code from classifier
-from DigitClassifierNN import create_augmentation_pipeline, ImageDataGeneratorWithAugmentation
+# Import pre-generated augmented data loader
+from DataManagement.NonDigitGenerator import DATA_DIR
+from DataManagement.PregenAugmentedData import load_augmented_data
 
-try:
-    from emnist import extract_training_samples, extract_test_samples
-    EMNIST_AVAILABLE = True
-except ImportError:
-    EMNIST_AVAILABLE = False
-    print("Warning: 'emnist' package not available. Install with: pip install emnist")
+
+class AutoencoderDiagnosticsCallback(keras.callbacks.Callback):
+    """
+    Callback to print per-epoch diagnostics for autoencoder.
+    Shows reconstruction error statistics per digit class and overall.
+    """
+    def __init__(self, x_val, y_val):
+        super().__init__()
+        self.x_val = x_val
+        self.y_val = y_val
+        # Precompute per-class masks for digits 0-9
+        self.class_masks = {}
+        for digit in range(10):
+            mask = y_val == digit
+            self.class_masks[digit] = mask
+    
+    def on_epoch_end(self, epoch, logs=None):
+        # Get reconstructions
+        reconstructions = self.model.predict(self.x_val, verbose=0)
+        
+        # Calculate MSE per sample
+        mse_per_sample = np.mean((self.x_val - reconstructions) ** 2, axis=(1, 2, 3))
+        
+        # Overall statistics
+        overall_mse = np.mean(mse_per_sample)
+        overall_std = np.std(mse_per_sample)
+        overall_min = np.min(mse_per_sample)
+        overall_max = np.max(mse_per_sample)
+        overall_p95 = np.percentile(mse_per_sample, 95)
+        
+        results = [f"MSE: {overall_mse:.6f}", f"Std: {overall_std:.6f}", 
+                   f"Min: {overall_min:.6f}", f"Max: {overall_max:.6f}", 
+                   f"P95: {overall_p95:.6f}"]
+        
+        # Per-digit reconstruction error
+        per_digit_results = []
+        for digit in range(10):
+            mask = self.class_masks[digit]
+            if np.sum(mask) > 0:
+                digit_mse = np.mean(mse_per_sample[mask])
+                digit_count = np.sum(mask)
+                per_digit_results.append(f"{digit}: {digit_mse:.6f} ({digit_count:,})")
+        
+        # Print diagnostics
+        print(f"  [Autoencoder] {' | '.join(results)}")
+        print(f"  [Per-digit MSE] {' | '.join(per_digit_results)}")
 
 
 def create_autoencoder_model():
     """
-    Create a convolutional autoencoder model for 28x28 digit images.
-    Minimal architecture to force specialization on digit patterns only.
+    Create a convolutional autoencoder model for 64x64 digit images.
     
-    Latent space: 7x7x8 = 392 dimensions (smaller = more selective)
+    Encoder: Conv32 → Pool → Conv64 → Pool → Conv32 → Pool
+    Bottleneck: 8x8x32 = 2,048 dimensions (2:1 compression from 4,096 pixels)
+    Decoder: UpSample → Conv64 → UpSample → Conv32 → UpSample → Conv32 → Conv1
         
     Returns:
         Compiled Keras autoencoder model
     """
 
-    # 1. Input Layer (28x28 grayscale images)
-    input_img = keras.Input(shape=(28, 28, 1))
+    # 1. Input Layer (64x64 grayscale images)
+    input_img = keras.Input(shape=(64, 64, 1))
 
     # 2. ENCODER
-    # Compresses: 28x28 -> 14x14 -> 7x7
-    # Reduced channels: 8 -> 8 (was 16 -> 32)
-    x = layers.Conv2D(8, (3, 3), activation='elu', padding='same')(input_img)
-    x = layers.MaxPooling2D((2, 2), padding='same')(x)
-    x = layers.Conv2D(8, (3, 3), activation='elu', padding='same')(x)
-    encoded = layers.MaxPooling2D((2, 2), padding='same')(x)
+    # 64x64x1 -> 64x64x32 -> 32x32x32 -> 32x32x64 -> 16x16x64 -> 16x16x32 -> 8x8x32
+    x = layers.Conv2D(32, (3, 3), activation='elu', padding='same')(input_img)  # 64x64x32
+    x = layers.MaxPooling2D((2, 2), padding='same')(x)  # 32x32x32
+    x = layers.Conv2D(64, (3, 3), activation='elu', padding='same')(x)  # 32x32x64
+    x = layers.MaxPooling2D((2, 2), padding='same')(x)  # 16x16x64
+    x = layers.Conv2D(32, (3, 3), activation='elu', padding='same')(x)  # 16x16x32
+    encoded = layers.MaxPooling2D((2, 2), padding='same')(x)  # 8x8x32 (bottleneck: 2,048 dims)
 
     # 3. DECODER
-    # Reconstructs: 7x7 -> 14x14 -> 28x28
-    x = layers.UpSampling2D((2, 2))(encoded)
-    x = layers.Conv2D(8, (3, 3), activation='elu', padding='same')(x)
-    x = layers.UpSampling2D((2, 2))(x)
-    x = layers.Conv2D(8, (3, 3), activation='elu', padding='same')(x)
+    # 8x8x32 -> 16x16x32 -> 16x16x64 -> 32x32x64 -> 32x32x32 -> 64x64x32 -> 64x64x1
+    x = layers.UpSampling2D((2, 2))(encoded)  # 16x16x32
+    x = layers.Conv2D(64, (3, 3), activation='elu', padding='same')(x)  # 16x16x64
+    x = layers.UpSampling2D((2, 2))(x)  # 32x32x64
+    x = layers.Conv2D(32, (3, 3), activation='elu', padding='same')(x)  # 32x32x32
+    x = layers.UpSampling2D((2, 2))(x)  # 64x64x32
+    x = layers.Conv2D(32, (3, 3), activation='elu', padding='same')(x)  # 64x64x32
 
     # 4. OUTPUT LAYER
     # Sigmoid matches the normalized [0, 1] range of input pixels
-    decoded = layers.Conv2D(1, (3, 3), activation='sigmoid', padding='same')(x)
+    decoded = layers.Conv2D(1, (3, 3), activation='sigmoid', padding='same')(x)  # 64x64x1
 
     # Compile the model
     autoencoder = keras.Model(input_img, decoded)
@@ -72,88 +116,67 @@ def create_autoencoder_model():
     return autoencoder
 
 
-def load_and_combine_datasets():
+def load_augmented_datasets(image_size=64):
     """
-    Load and combine MNIST and EMNIST datasets for autoencoder training.
+    Load pre-generated, pre-augmented, balanced data for autoencoder training.
+    Uses the same data loader as DigitClassifierSoftMax11.py.
+    Loads from EMNIST, USPS, ARDIS, and Google Fonts (digits only, no non-digits).
+        
+    Args:
+        image_size: Image size (64, default: 64)
         
     Returns:
-        Tuple of (x_train, x_test) as numpy arrays
-        Arrays are normalized to [0, 1] and reshaped to (samples, 28, 28, 1)
+        Tuple of (x_train, y_train, x_test, y_test) as numpy arrays
+        - x_train, x_test: Arrays normalized to [0, 1] and shaped (samples, image_size, image_size, 1)
+        - y_train, y_test: Labels (0-9 for digits only)
     
     Raises:
         ValueError: If no datasets could be loaded
     """
-    # Load MNIST if requested
-    x_train_mnist = None
-    x_test_mnist = None
+    print(f"Loading pre-generated augmented data ({image_size}x{image_size})...")
+    print("Note: Autoencoder uses ONLY digits (0-9), non-digits will be filtered out")
+    x_train_all, y_train_all, x_test, y_test = load_augmented_data(image_size=image_size)
     
-    print("Loading MNIST dataset...")
-    (x_train_mnist, _), (x_test_mnist, _) = keras.datasets.mnist.load_data()
-    print(f"Loaded MNIST: {len(x_train_mnist)} training, {len(x_test_mnist)} test samples")
+    if x_train_all is None:
+        raise ValueError(f"Failed to load augmented data. Run augmentation scripts for size {image_size}")
     
-    # Load EMNIST Digits if requested and available
-    x_train_emnist = None
-    x_test_emnist = None
+    # For autoencoder, we only need images (input = target)
+    # Filter to only use digit classes (0-9), exclude non-digits (class 10)
+    digit_mask_train = y_train_all < 10
+    digit_mask_test = y_test < 10
     
-    if EMNIST_AVAILABLE:
-        try:
-            print("Loading EMNIST Digits dataset...")
-            x_train_emnist, _ = extract_training_samples('digits')
-            x_test_emnist, _ = extract_test_samples('digits')
-            print(f"Loaded EMNIST Digits: {len(x_train_emnist)} training, {len(x_test_emnist)} test samples")
-        except Exception as e:
-            print(f"Error: Could not load EMNIST Digits: {e}")
-            x_train_emnist = None
-            x_test_emnist = None
+    n_non_digits_train = np.sum(y_train_all == 10)
+    n_non_digits_test = np.sum(y_test == 10)
     
-    # Combine datasets
-    datasets_to_combine = []
-    dataset_names = []
+    x_train_digits = x_train_all[digit_mask_train]
+    y_train_digits = y_train_all[digit_mask_train]
+    x_test_digits = x_test[digit_mask_test]
+    y_test_digits = y_test[digit_mask_test]
     
-    if x_train_mnist is not None:
-        datasets_to_combine.append((x_train_mnist, x_test_mnist))
-        dataset_names.append(f"MNIST ({len(x_train_mnist)} samples)")
+    print(f"\n✓ Filtered out non-digits (autoencoder uses digits only):")
+    print(f"  Excluded from training: {n_non_digits_train:,} non-digit samples")
+    print(f"  Excluded from test: {n_non_digits_test:,} non-digit samples")
+    print(f"\nLoaded digit images for autoencoder:")
+    print(f"  Training: {len(x_train_digits):,} digit samples")
+    print(f"  Test: {len(x_test_digits):,} digit samples")
     
-    if x_train_emnist is not None:
-        datasets_to_combine.append((x_train_emnist, x_test_emnist))
-        dataset_names.append(f"EMNIST Digits ({len(x_train_emnist)} samples)")
-    
-    if len(datasets_to_combine) == 0:
-        raise ValueError("No training data available!")
-    
-    # Combine all available datasets
-    if len(datasets_to_combine) == 1:
-        x_train, x_test = datasets_to_combine[0]
-        print(f"Using {dataset_names[0]}: {len(x_train)} training, {len(x_test)} test samples")
-    else:
-        print(f"Combining datasets: {' + '.join(dataset_names)}")
-        x_train = np.concatenate([ds[0] for ds in datasets_to_combine], axis=0)
-        x_test = np.concatenate([ds[1] for ds in datasets_to_combine], axis=0)
-        print(f"Combined dataset: {len(x_train)} training, {len(x_test)} test samples")
-    
-    # Normalize pixel values to [0, 1]
-    x_train = x_train.astype('float32') / 255.0
-    x_test = x_test.astype('float32') / 255.0
-    
-    # Reshape for autoencoder (28, 28, 1)
-    x_train = x_train.reshape(x_train.shape[0], 28, 28, 1)
-    x_test = x_test.reshape(x_test.shape[0], 28, 28, 1)
-    
-    return x_train, x_test
+    return x_train_digits, y_train_digits, x_test_digits, y_test_digits
 
 
 def train_autoencoder(num_epochs=20):
     """
-    Train an autoencoder on MNIST/EMNIST datasets.
+    Train an autoencoder on pre-generated augmented digit datasets.
+    Uses the same data as DigitClassifierSoftMax11.py: EMNIST, USPS, ARDIS, Google Fonts.
+    Only uses digit classes (0-9), excludes non-digits (class 10).
     
     Args:
         num_epochs: Number of training epochs (default: 20)
     
     Returns:
-        Trained autoencoder model
+        Trained autoencoder model (64x64 input)
     """
     # Create timestamped directory for model
-    base_dir = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data" / "autoencoder"
+    base_dir = DATA_DIR / "autoencoder"
     base_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
@@ -164,16 +187,16 @@ def train_autoencoder(num_epochs=20):
         
     # Create model
     print("Creating autoencoder model...")
-    autoencoder= create_autoencoder_model()
+    autoencoder = create_autoencoder_model()
     
-    # Load datasets
-    x_train, x_test = load_and_combine_datasets()
+    # Load pre-generated augmented datasets (64x64)
+    x_train, y_train, x_test, y_test = load_augmented_datasets(image_size=64)
     
-    print(f"Training samples: {len(x_train)}")
-    print(f"Test samples: {len(x_test)}")
+    print(f"\nTraining samples: {len(x_train):,}")
+    print(f"Test samples: {len(x_test):,}")
     print(f"Number of epochs: {num_epochs}")
-    print(f"Model architecture: {'Shallow (2 conv layers)'}")
-    print(f"Data augmentation: {'Enabled'}")
+    print(f"Model architecture: 64x64 input, encoder (Conv32→Pool→Conv64→Pool→Conv32→Pool), bottleneck (8x8x32=2,048), decoder (UpSample→Conv64→UpSample→Conv32→UpSample→Conv32→Conv1)")
+    print(f"Data: Pre-generated augmented data (EMNIST, USPS, ARDIS, Google Fonts)")
     
     # ModelCheckpoint callback
     checkpoint_callback = keras.callbacks.ModelCheckpoint(
@@ -185,42 +208,41 @@ def train_autoencoder(num_epochs=20):
     
     print(f"Epoch models will be saved as: {run_dir}/autoencoder_epoch_XX.keras")
     
+    # Train with pre-generated augmented data
+    batch_size = 128
     print("\n" + "="*60)
-    print("Setting up data augmentation...")
+    print("Starting training with pre-generated augmented data...")
     print("="*60)
-    print("50% of samples will be augmented, 50% will remain original")
-    print("Each augmented sample produces 2 images: one rotated, one sheared")
-    print("="*60 + "\n")
     
-    # Create augmentation pipeline (for blur/noise)
-    augmentation_pipeline = create_augmentation_pipeline()
+    # Training dataset - use from_tensor_slices (references data, no copy)
+    # For autoencoder: input = target, so we use (x_train, x_train)
+    train_dataset = tf.data.Dataset.from_tensor_slices((x_train, x_train))
+    train_dataset = train_dataset.shuffle(buffer_size=10000)
+    train_dataset = train_dataset.batch(batch_size)
+    train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
     
-    # Create data generator with augmentation (reuse from classifier)
-    # For autoencoder, we use dummy labels since generator expects (x, y)
-    dummy_y_train = np.zeros(len(x_train), dtype=np.int32)
-    dummy_y_test = np.zeros(len(x_test), dtype=np.int32)
-    batch_size = 64
+    # Validation dataset - use from_tensor_slices (references data, no copy)
+    val_dataset = tf.data.Dataset.from_tensor_slices((x_test, x_test))
+    val_dataset = val_dataset.batch(batch_size)
     
-    train_datagen = ImageDataGeneratorWithAugmentation(
-        augmentation_pipeline=augmentation_pipeline,
-        batch_size=batch_size
+    # Diagnostics callback
+    diagnostics_callback = AutoencoderDiagnosticsCallback(x_test, y_test)
+    
+    # Early stopping - stop when validation loss stops improving
+    early_stopping = keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=50,  # Stop if no improvement for 5 epochs
+        min_delta=0.0001,  # Minimum change to qualify as improvement
+        restore_best_weights=True,  # Restore best weights when stopping
+        verbose=1
     )
-        
-    # Create wrapper generator for autoencoder (input = target)
-    def autoencoder_generator():
-        for x_batch, y_batch in train_datagen.flow(x_train, dummy_y_train, batch_size=batch_size):
-            # For autoencoder: input = target (both are the same images)
-            yield x_batch, x_batch
     
-    # Train with augmented data
-    print("Starting training with data augmentation...")
     autoencoder.fit(
-        autoencoder_generator(),
-        steps_per_epoch=len(x_train) // batch_size,
+        train_dataset,
         epochs=num_epochs,
-        validation_data=(x_test, x_test),  # No augmentation on validation
+        validation_data=val_dataset,
         verbose=1,
-        callbacks=[checkpoint_callback]
+        callbacks=[checkpoint_callback, diagnostics_callback, early_stopping]
     )
     
     # Save final model
@@ -275,15 +297,15 @@ def is_likely_digit(autoencoder, digit_image, threshold=None):
     
     Args:
         autoencoder: Trained autoencoder model
-        digit_image: 28x28 greyscale image (numpy array, uint8 0-255 or float 0-1)
+        digit_image: 64x64 greyscale image (numpy array, uint8 0-255 or float 0-1)
         threshold: MSE threshold (if None, uses 95th percentile from training)
     
     Returns:
         Tuple of (is_digit: bool, mse: float)
     """
     # Ensure image is the right shape and type
-    if digit_image.shape != (28, 28):
-        digit_image = cv2.resize(digit_image, (28, 28))
+    if digit_image.shape != (64, 64):
+        digit_image = cv2.resize(digit_image, (64, 64), interpolation=cv2.INTER_LANCZOS4)
     
     # Normalize to [0, 1] if needed
     if digit_image.dtype == np.uint8:
@@ -293,8 +315,8 @@ def is_likely_digit(autoencoder, digit_image, threshold=None):
         if digit_normalized.max() > 1.0:
             digit_normalized = digit_normalized / 255.0
     
-    # Reshape for model input: (1, 28, 28, 1)
-    digit_input = digit_normalized.reshape(1, 28, 28, 1)
+    # Reshape for model input: (1, 64, 64, 1)
+    digit_input = digit_normalized.reshape(1, 64, 64, 1)
     
     # Reconstruct
     reconstruction = autoencoder.predict(digit_input, verbose=0)

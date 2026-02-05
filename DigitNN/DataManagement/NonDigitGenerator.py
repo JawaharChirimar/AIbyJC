@@ -51,7 +51,6 @@ else:
 def load_custom_non_digits(image_size=28):
     """
     Load custom non-digit images from CUSTOM_NON_DIGITS_DIR.
-    Also loads individual files like not6.jpeg from the data directory.
     
     Args:
         image_size: Target image size (28 or 64, default: 28)
@@ -61,23 +60,8 @@ def load_custom_non_digits(image_size=28):
     """
     custom_images = []
     CUSTOM_NON_DIGITS_DIR = DATA_DIR / "non-digits"
-    
-    # Load individual not*.jpeg/png files from data directory
-    for pattern in ["not*.jpeg", "not*.jpg", "not*.png"]:
-        for img_path in DATA_DIR.glob(pattern):
-            try:
-                img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-                if img is not None:
-                    # Resize to image_size x image_size using LANCZOS
-                    img_resized = cv2.resize(img, (image_size, image_size), interpolation=cv2.INTER_LANCZOS4)
-                    # Normalize to [0, 1]
-                    img_normalized = img_resized.astype(np.float32) / 255.0
-                    custom_images.append(img_normalized)
-                    print(f"  Loaded custom non-digit: {img_path.name}")
-            except Exception as e:
-                print(f"  Warning: Could not load {img_path}: {e}")
-    
-    # Load from non_digits directory if it exists
+
+    # Load from non-digits directory if it exists
     if CUSTOM_NON_DIGITS_DIR.exists():
         for img_path in CUSTOM_NON_DIGITS_DIR.glob("*"):
             if img_path.suffix.lower() in ['.jpeg', '.jpg', '.png', '.bmp']:
@@ -100,7 +84,7 @@ def load_custom_non_digits(image_size=28):
 
 
 def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO, 
-                             image_size=28):
+                             image_size=28, dataset="Train"):
     """
     Create negative examples for softmax training with 11 classes.
     These are images that are NOT digits, labeled as class 10.
@@ -131,18 +115,28 @@ def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO,
     n_salt_pepper = int(target_count * 0.03)     # 3%
     n_gradient = int(target_count * 0.03)         # 3%
     
-    # Medium (50%)
-    n_letters_safe = int(target_count * 0.25)     # 25%
-    n_letters_additional = int(target_count * 0.12)  # 12%
-    n_symbols = int(target_count * 0.08)        # 8%
-    n_custom = int(target_count * 0.05)          # 5%
-    
-    # Hard (25%)
-    n_hard_mining = int(target_count * 0.25)     # 25% (placeholder - requires iterative training)
-    
-    # REMOVED: All digit-based negatives (cuts, partials, rotations, overlaps)
-    # These created recognizable digits (0 with ghost, vertical line "1", etc.)
-    
+    # Medium (75%)
+    # Count custom non-digit image files in DATA_DIR / "non-digits"
+    CUSTOM_NON_DIGITS_DIR = DATA_DIR / "non-digits"
+
+    n_custom = 0
+    if CUSTOM_NON_DIGITS_DIR.exists() and dataset == "Train":
+        image_extensions = ['.jpeg', '.jpg', '.png', '.bmp']
+        n_custom = sum(1 for img_path in CUSTOM_NON_DIGITS_DIR.glob("*") 
+                      if img_path.suffix.lower() in image_extensions)
+
+    #target_count * 45% - n_custom
+    n_letters_safe = int(target_count * 0.50) - n_custom
+    n_symbols = int(target_count * 0.25)   # target_count * 25%
+
+    temp = target_count - n_black - n_white - n_sparse_noise 
+    temp = temp - n_dense_noise - n_salt_pepper - n_gradient 
+    temp = temp - n_letters_safe - n_symbols - n_custom
+
+    n_letters_safe = n_letters_safe + temp
+    # Hard (0%)
+    n_hard_mining = 0; # 0% (placeholder - requires iterative training)
+        
     negative_images = []
     
     print(f"\nCreating {target_count:,} negative examples ({target_ratio*100:.0f}% of {total_digit_samples:,} digits)...")
@@ -212,16 +206,21 @@ def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO,
     # MEDIUM NEGATIVES (50%)
     # ============================================================================
     
-    # REMOVED: EMNIST digits loading - no longer needed since we removed all digit-based negatives
-    
-    
-    # REMOVED: All filter and helper functions for digit-based negatives
-    # These are no longer needed since we removed all digit-based negative generation
-    
     # 7. Letters - Safe (20%)
-    # Removed: Y (label 25) - lowercase 'y' looks like 4 or 7
-    # Removed: a (label 1), g (label 7), q (label 17) - too ambiguous
-    SAFE_LETTER_LABELS = [8, 11, 13, 14, 18, 22, 23, 24]  # H, K, M, N, R, V, W, X
+    # Using EMNIST ByClass labels (10-61): uppercase 10-35, lowercase 36-61
+    #[10, 12, 14, 15, 16, 17, 20, 22, 23, 25, 27, 29, 30, 31, 32, 33, 
+    #37, 38, 39, 40, 41, 43, 46, 48, 49, 51, 53, 55, 56, 57, 58, 59]
+    #[A, C, E, F, G, H, K, M, N, P, R, T, U, V, W, X, 
+    #b, c, d, e, f, h, k, m, n, p, r, t, u, v, w, x]
+    SAFE_LETTER_LABELS = [
+        #A,  C,  E,  F,  G,  H,  K,  M,  N,
+        10, 12, 14, 15, 16, 17, 20, 22, 23,
+        #P,  R,  T,  U,  V,  W,  X, 
+        25, 27, 29, 30, 31, 32, 33,
+        #b,  c,  d,  e,  f,  h,  k,  m,  n,
+        37, 38, 39, 40, 41, 43, 46, 48, 49,
+        #p,  r,  t,  u,  v,  w,  x
+        51, 53, 55, 56, 57, 58, 59]
     if n_letters_safe > 0:
         try:
             # Load pre-generated letters directly from data/EMNIST (not cached)
@@ -249,41 +248,13 @@ def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO,
         except Exception as e:
             print(f"  Warning: Could not load safe letters: {e}")
     
-    # 8. Letters - Additional (5%) - C, E, F, J, T, U (exclude O, I, S, Z, L, B, G, P, Q, D)
-    # Removed: B (looks like 8), G (looks like 6/9), P (looks like 9), Q (looks like 9), D (looks like 0)
-    ADDITIONAL_LETTER_LABELS = [3, 5, 6, 10, 20, 21]  # C, E, F, J, T, U
-    if n_letters_additional > 0:
-        try:
-            # Load pre-generated letters directly from data/EMNIST (not cached)
-            from DataManagement.GetEMNIST import load_emnist_letters_size
-            x_letters_all, y_letters_all = load_emnist_letters_size(target_size=image_size)
-            if x_letters_all is None:
-                raise Exception("EMNIST letters not available")
-            
-            additional_mask = np.isin(y_letters_all, ADDITIONAL_LETTER_LABELS)
-            x_letters = x_letters_all[additional_mask].copy()  # Copy to avoid modifying cache
-            x_letters = x_letters.astype('float32') / 255.0
-            x_letters = x_letters.reshape(-1, image_size, image_size, 1)
-            
-            if len(x_letters) > n_letters_additional:
-                indices = np.random.choice(len(x_letters), n_letters_additional, replace=False)
-                x_letters = x_letters[indices]
-            else:
-                if len(x_letters) < n_letters_additional:
-                    repeats = (n_letters_additional // len(x_letters)) + 1
-                    x_letters = np.tile(x_letters, (repeats, 1, 1, 1))[:n_letters_additional]
-            
-            # Already 64x64, no upscaling needed!
-            negative_images.append(x_letters)
-            print(f"  Letters (Additional): {len(x_letters):,}")
-        except Exception as e:
-            print(f"  Warning: Could not load additional letters: {e}")
-    
+    # 8. SKIP
+
     # 9. Symbols (3%)
     if n_symbols > 0:
         symbols = ['+', '=', '*', '÷', '(', ')', '[', ']', '{', '}', 
-                   '"', "'", '<', '>', '?', 
-                  '@', '#', '$', '%', '&', '^', '~']
+        '<', '>', '?', '£', '€', '¥', '¢', '§', '©', '®', '™', 
+        '@', '#', '$', '%', '&', '^', '~']
         symbol_images = []
         for i in range(n_symbols):
             symbol = np.random.choice(symbols)
@@ -322,19 +293,7 @@ def create_negative_examples(total_digit_samples, target_ratio=NEGATIVE_RATIO,
     # HARD NEGATIVES (25%)
     # ============================================================================
         
-    # 27. Hard Negatives (Mining) (5%) - placeholder
-    # This requires iterative training - collect misclassifications from previous model
-    # For now, generate placeholder noise (will be replaced in iterative training)
-    if n_hard_mining > 0:
-        # Placeholder: use dense noise as fallback
-        # In practice, this should be loaded from previous training failures
-        hard_mining_images = np.zeros((n_hard_mining, image_size, image_size, 1), dtype=np.float32)
-        for i in range(n_hard_mining):
-            coverage = np.random.uniform(0.30, 0.60)
-            mask = np.random.random((image_size, image_size)) < coverage
-            hard_mining_images[i, :, :, 0] = mask.astype(np.float32)
-        negative_images.append(hard_mining_images)
-        print(f"  Hard Negatives (Mining - placeholder): {n_hard_mining:,}")
+    # 27. skip - Hard Negatives (Mining)
     
     # ============================================================================
     # COMBINE AND RETURN

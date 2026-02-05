@@ -194,9 +194,12 @@ def load_emnist_64x64(split='digits', force_regenerate=False):
 
 def load_emnist_letters_size(target_size=28, force=False):
     """
-    Load or generate EMNIST letters (A-Z) at target_size x target_size resolution.
+    Load or generate EMNIST letters (A-Z, a-z) at target_size x target_size resolution.
     
-    Letters are labeled 1-26 (A=1, B=2, ..., Z=26).
+    Uses EMNIST ByClass to get 52 separate letter classes (uppercase and lowercase separate).
+    Letters are labeled 10-61:
+    - Uppercase A-Z: labels 10-35
+    - Lowercase a-z: labels 36-61
     EMNIST letters are originally 28x28.
     
     Args:
@@ -206,7 +209,7 @@ def load_emnist_letters_size(target_size=28, force=False):
     Returns:
         Tuple of (x_train, y_train) or (None, None) if not available
         - x_train: (N, target_size, target_size) uint8
-        - y_train: (N,) int32 (labels 1-26)
+        - y_train: (N,) int32 (labels 10-61)
     """
     if not EMNIST_AVAILABLE:
         print("EMNIST package not available.")
@@ -223,10 +226,16 @@ def load_emnist_letters_size(target_size=28, force=False):
     # Generate
     EMNIST_DIR.mkdir(parents=True, exist_ok=True)
     
-    print("Extracting EMNIST letters using emnist package...")
-    x_train, y_train = extract_training_samples('letters')
-    print(f"  Loaded {len(x_train):,} letter samples")
-    print(f"  Labels: {np.unique(y_train)}")
+    print("Extracting EMNIST letters using emnist package (byclass for 52 separate classes)...")
+    x_train, y_train = extract_training_samples('byclass')
+    
+    # Filter to get only letters: labels 10-61 (uppercase 10-35, lowercase 36-61)
+    letter_mask = (y_train >= 10) & (y_train <= 61)
+    x_train = x_train[letter_mask]
+    y_train = y_train[letter_mask]
+    
+    print(f"  Loaded {len(x_train):,} letter samples (52 classes: uppercase 10-35, lowercase 36-61)")
+    print(f"  Unique labels: {np.unique(y_train)}")
     
     # Check if data already matches target size (EMNIST letters are 28x28)
     current_size = x_train.shape[1] if len(x_train.shape) >= 2 else 28

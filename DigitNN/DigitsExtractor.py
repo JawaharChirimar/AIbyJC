@@ -17,7 +17,37 @@ from pathlib import Path
 from datetime import datetime
 import cv2
 import numpy as np
-from DigitClassifierSoftMax10 import load_or_create_digit_classifier, classify_digit, BalancedLoss
+
+# Conditional imports based on model path
+def get_classifier_module(classifier_model_path):
+    """
+    Determine which classifier module to use based on model path.
+    
+    Args:
+        classifier_model_path: Path to the model file
+    
+    Returns:
+        Module object for the appropriate classifier
+    """
+    if classifier_model_path is None:
+        # Default to SoftMax11 if no path provided
+        import DigitClassifierSoftMax11
+        return DigitClassifierSoftMax11
+    
+    path_str = str(classifier_model_path)
+    
+    # Check if path contains run_MNIST* pattern
+    if 'run_MNIST' in path_str:
+        import DigitClassifierSoftMax10
+        return DigitClassifierSoftMax10
+    # Check if path contains run_EMNIST* pattern
+    elif 'run_EMNIST' in path_str:
+        import DigitClassifierSoftMax11
+        return DigitClassifierSoftMax11
+    else:
+        # Default to SoftMax11 if pattern doesn't match
+        import DigitClassifierSoftMax11
+        return DigitClassifierSoftMax11
 
 
 def create_output_directory():
@@ -350,124 +380,6 @@ background_mean=0, foreground_mean=255):
     return final
 
 
-def extract_and_process_region_prev(image, box, target_size=(64, 64), 
-background_mean=0):
-    """
-    PREVIOUS VERSION: Extract region, transform, then resize multiple times.
-    
-    Args:
-        image: Input image (BGR format from cv2)
-        box: Bounding box (x1, y1, x2, y2)
-        target_size: Target size (width, height)
-        background_mean: mean value of background (determined from full image)
-    
-    Returns:
-        Processed 64x64 binary image
-    """
-    x1, y1, x2, y2 = map(int, box)
-
-    print("background_mean: ", background_mean)
-    
-    # Ensure coordinates are within image bounds
-    h, w = image.shape[:2]
-    x1 = max(0, x1)
-    y1 = max(0, y1)
-    x2 = min(w, x2)
-    y2 = min(h, y2)
-    
-    # Extract region
-    digit0 = image[y1:y2, x1:x2]
-    # Convert to grayscale if needed
-    if len(digit0.shape) == 3:
-        digit0 = cv2.cvtColor(digit0, cv2.COLOR_BGR2GRAY)
-
-
-    digit1 = cv2.resize(digit0, target_size, interpolation=cv2.INTER_AREA)   
-    
-    # Light noise reduction - very gentle blur to smooth without losing detail
-    digit2 = cv2.bilateralFilter(digit1, 5, 50, 50)
-    
-    # Threshold based on background type
-    # Dilate grayscale image BEFORE thresholding to preserve thick strokes
-    # For dark background: dilate bright pixels (digits)
-    # For light background: erode (which dilates dark pixels = digits)
-    dilate_kernel = np.ones((3, 3), np.uint8)  # Larger kernel for thin strokes
-    if background_mean < 127:
-        # Dark background: dilate to expand white digits
-        digit2_dilated = cv2.dilate(digit2, dilate_kernel, iterations=1)
-    else:
-        # Light background: erode to expand dark digits (before inversion)
-        digit2_dilated = cv2.erode(digit2, dilate_kernel, iterations=1)
-
-    if background_mean < 127:
-        # Dark background with light digits (white-on-black)
-        # Use simple Otsu's threshold - adaptive doesn't work well for this case
-        _, digit3 = cv2.threshold(digit2_dilated, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    else:
-        # Light background with dark digits (black-on-white)
-        # Use adaptive threshold, then invert to get white-on-black (MNIST format)
-        digit3 = cv2.adaptiveThreshold(digit2_dilated, 255, 
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 5)
-    
-    # Morphological closing to reconnect nearby disconnected parts
-    close_kernel = np.ones((3, 3), np.uint8)
-    digit3 = cv2.morphologyEx(digit3, cv2.MORPH_CLOSE, close_kernel, iterations=1)
-
-    # Very light noise removal - only remove tiny isolated pixels (only for binary)
-    kernel = np.ones((1, 1), np.uint8)  # Minimal kernel
-    digit4 = cv2.morphologyEx(digit3, cv2.MORPH_OPEN, kernel, iterations=1)
-    
-    # Height and width of original bounding box
-    h, w = image[y1:y2, x1:x2].shape[:2]
-    
-    # Calculate scaling factor to fit the larger dimension to target_size
-    # Leave some margin for padding (e.g., 4 pixels)
-    margin = 4
-    max_dim = max(h, w)
-    scale = (target_size[0] - margin) / max_dim
-    new_w = int(w * scale)
-    new_h = int(h * scale)
-    
-    # Resize maintaining aspect ratio
-    digit5 = cv2.resize(digit4, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-    
-    # Add padding to make it square, centering the digit in the target_size
-    pad_h = (target_size[0] - new_h) // 2
-    pad_w = (target_size[1] - new_w) // 2
-    pad_h_remainder = (target_size[0] - new_h) % 2  # Handle odd padding
-    pad_w_remainder = (target_size[1] - new_w) % 2
-    
-    # Add padding with black (0) since we want white digits on black background
-    digit6 = cv2.copyMakeBorder(
-        digit5,
-        top=pad_h,
-        bottom=pad_h + pad_h_remainder,
-        left=pad_w,
-        right=pad_w + pad_w_remainder,
-        borderType=cv2.BORDER_CONSTANT,
-        value=0  # Black padding (MNIST format: white digits on black background)
-    )
-    
-    # Ensure binary: anything that's not white (255) becomes black (0)
-    # digit5 is already binary (0 or 255) from adaptiveThreshold, but padding might have added grayscale
-    digit7 = np.where(digit6 > 127, 255, 0).astype(np.uint8)
-    
-    # Add 4 pixels of solid black padding on all 4 sides to make 28x28
-    # Final size: 52 + 2 + 2 = 56
-    padding = 2
-    digit8 = cv2.copyMakeBorder(
-        digit7,
-        top=padding,
-        bottom=padding,
-        left=padding,
-        right=padding,
-        borderType=cv2.BORDER_CONSTANT,
-        value=0  # Black padding
-    )
-    
-    return digit8
-
-
 
 def process_image(input_path=None, output_dir=None, 
 classifier_model_path=None, classify_digits=False, 
@@ -552,6 +464,7 @@ image_array=None, return_results=False):
     
     # Load digit classifier if classification is requested (required for return_results)
     classifier_model = None
+    classifier_module = None
     if classify_digits or return_results:
         if classifier_model_path is None:
             if return_results:
@@ -560,7 +473,9 @@ image_array=None, return_results=False):
             classify_digits = False
         else:
             try:
-                classifier_model = load_or_create_digit_classifier(train_model=False, classifier_model_path=classifier_model_path)
+                # Get the appropriate classifier module based on model path
+                classifier_module = get_classifier_module(classifier_model_path)
+                classifier_model = classifier_module.load_digit_classifier(classifier_model_path)
             except Exception as e:
                 if return_results:
                     return {'error': f'Could not load classifier model: {str(e)}'}
@@ -572,15 +487,22 @@ image_array=None, return_results=False):
     results = []
     for line_num, digit_num, box in sorted_detections:
         # Extract and process region (using original pipeline with thresholding)
-        processed_region = extract_and_process_region(image, box, 
-        background_mean=background_mean, foreground_mean=foreground_mean)
+        processed_region = extract_and_process_region(
+            image, 
+            box, 
+            background_mean=background_mean, 
+            foreground_mean=foreground_mean)
         
         # Classify digit if requested
         predicted_digit = None
         confidence = None
-        if (classify_digits or return_results) and classifier_model:
+        energy_score = None
+        if (classify_digits or return_results) and classifier_model and classifier_module:
             try:
-                predicted_digit, confidence = classify_digit(classifier_model, processed_region, input_size=64)
+                predicted_digit, confidence, energy_score = classifier_module.classify_digit(
+                    classifier_model, 
+                    processed_region, 
+                    input_size=64)
             except Exception as e:
                 if return_results:
                     return {'error': f'Classification failed: {str(e)}'}

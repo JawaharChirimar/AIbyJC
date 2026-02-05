@@ -20,19 +20,32 @@ Usage:
     python FontDigitGenerator.py --output-dir ./data/font_digits
     
 Output:
-    - Individual PNG images
-    - font_digits_softmax.npz: x (N, 64, 64, 1), y (N,) integer labels
-    - font_digits_sigmoid.npz: x (N, 64, 64, 1), y (N, 10) one-hot labels
+    - font_digits_train_augmented_{size}x{size}.npz: x (N, size, size, 1), y (N,) integer labels
+    - font_digits_test_augmented_{size}x{size}.npz: x (N, size, size, 1), y (N,) integer labels
 """
 
 import os
+import sys
+import random
 import argparse
 import requests
 from pathlib import Path
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 import tempfile
-import cv2
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from DataManagement.DataAugmentation import (
+    apply_rotation as apply_rotation_np,
+    apply_shear as apply_shear_np,
+    apply_aspect_ratio as apply_aspect_ratio_np,
+    apply_random_pixel_erasure as apply_random_pixel_erasure_np,
+    apply_stroke_breaks as apply_stroke_breaks_np,
+    apply_thinning as apply_thinning_np,
+    apply_thickening as apply_thickening_np
+)
 
 
 # =============================================================================
@@ -63,7 +76,8 @@ FONT_CATEGORY_LIMITS = {
 
 # Font weights: use 1 weight per font (non-italic only)
 # Priority: regular (400) > bold (700) > thin (100-300)
-PREFERRED_WEIGHTS = ["100", "200", "300", "regular", "400", "500", "600", "700", "800", "900"]
+PREFERRED_WEIGHTS = ["regular", "400", "500", "700", "600", "800", "900", "300", "200", "100"]
+
 # Exclude italic variants
 EXCLUDE_VARIANTS = ["italic", "100italic", "200italic", "300italic", "400italic", 
                     "500italic", "600italic", "700italic", "800italic", "900italic"]
@@ -88,7 +102,7 @@ ASPECT_RATIOS = [0.625, 0.75, 0.85, 0.90, 1.00, 1.125, 1.25, 1.50, 1.60]  # widt
 # Combinations: stroke (3) × aspect (9) = 27 combinations
 # Per combination: 1 rotation + 1 shear + 1 erasure + 1 stroke breaks = 4 variations
 # Plus 1 original per digit = 109 total per digit
-COMBINATIONS_COUNT = 27  # 3 stroke × 9 aspect
+COMBINATIONS_COUNT = len(STROKE_VARIATIONS) * len(ASPECT_RATIOS)
 
 # Erasure and stroke break parameters (for font generation only)
 ERASURE_PERCENT = 0.15  # 15% of white pixels erased
@@ -157,9 +171,10 @@ def get_all_fonts_by_category(api_key):
     - display: Top 10
     
     Returns:
-        List of unique fonts with their variants
+        Dictionary keyed by category, each value is a list of unique fonts with their variants
+        Example: {"handwriting": [font1, font2, ...], "sans-serif": [...], "display": [...]}
     """
-    all_fonts = []
+    all_fonts_by_category = {}
     seen_families = set()
     
     print("\n" + "="*60)
@@ -168,6 +183,7 @@ def get_all_fonts_by_category(api_key):
     
     for category, limit in FONT_CATEGORY_LIMITS.items():
         fonts = get_google_fonts(api_key, category=category, num_fonts=limit)
+        all_fonts_by_category[category] = []
         
         # Add unique fonts only
         for font in fonts:
@@ -175,22 +191,18 @@ def get_all_fonts_by_category(api_key):
             if family not in seen_families:
                 seen_families.add(family)
                 font["_category"] = category  # Track source category
-                all_fonts.append(font)
+                all_fonts_by_category[category].append(font)
     
-    print(f"\nTotal unique fonts: {len(all_fonts)}")
+    total_fonts = sum(len(fonts) for fonts in all_fonts_by_category.values())
+    print(f"\nTotal unique fonts: {total_fonts}")
     
     # Summary by category
-    by_category = {}
-    for font in all_fonts:
-        cat = font.get("_category", "unknown")
-        by_category[cat] = by_category.get(cat, 0) + 1
-    
     print("By category:")
-    for cat, count in by_category.items():
-        print(f"  {cat}: {count}")
+    for cat, fonts in all_fonts_by_category.items():
+        print(f"  {cat}: {len(fonts)}")
     print("="*60 + "\n")
     
-    return all_fonts
+    return all_fonts_by_category
 
 
 def download_font(font_url, font_name):
@@ -214,21 +226,20 @@ def download_font(font_url, font_name):
         return None
 
 
-def render_base_digit(digit, font_path, canvas_size=128, font_size=None):
+def render_base_digit(digit, font_path, canvas_size):
     """
     Render a single digit on a larger canvas for later transformation.
     Returns grayscale image with white digit on black background.
     
-    If font_size is None, automatically scales to 50% of canvas height.
+    If font_size is 45% of canvas size.
     """
     img = Image.new('L', (canvas_size, canvas_size), color=0)
     draw = ImageDraw.Draw(img)
     
-    # Auto-scale font size to 45% of canvas if not specified
+    # Auto-scale font size to 45% of canvas
     # This ensures no clipping with 1.75x aspect ratio + 30° rotation
     # Worst case: 1.75S × S rotated 30° ≈ 2.0S, so S ≤ canvas/2.0 = 45% is safe
-    if font_size is None:
-        font_size = int(canvas_size * 0.45)
+    font_size = int(canvas_size * 0.45)
     
     try:
         font = ImageFont.truetype(font_path, font_size)
@@ -250,42 +261,32 @@ def render_base_digit(digit, font_path, canvas_size=128, font_size=None):
 
 def apply_rotation(img, angle):
     """Apply rotation to image."""
-    return img.rotate(angle, resample=Image.Resampling.BILINEAR, fillcolor=0)
+    # Convert PIL Image to numpy array (0-1 float32)
+    img_array = np.array(img, dtype=np.float32) / 255.0
+    # Apply rotation using DataAugmentation function
+    result_array = apply_rotation_np(img_array, angle)
+    # Convert back to PIL Image (0-255 uint8)
+    return Image.fromarray((result_array * 255).astype(np.uint8))
 
 
 def apply_shear(img, shear_degrees):
     """Apply vertical shear transformation to image (in degrees)."""
-    import math
-    width, height = img.size
-    # Convert degrees to shear factor
-    shear_factor = math.tan(math.radians(shear_degrees))
-    # Affine transform matrix for vertical shear (y-axis)
-    # [1, 0, 0]
-    # [shear, 1, -shear*width/2]
-    coeffs = (1, 0, 0,
-              shear_factor, 1, -shear_factor * width / 2)
-    return img.transform((width, height), Image.Transform.AFFINE, coeffs,
-                         resample=Image.Resampling.BILINEAR, fillcolor=0)
+    # Convert PIL Image to numpy array (0-1 float32)
+    img_array = np.array(img, dtype=np.float32) / 255.0
+    # Apply shear using DataAugmentation function
+    result_array = apply_shear_np(img_array, shear_degrees)
+    # Convert back to PIL Image (0-255 uint8)
+    return Image.fromarray((result_array * 255).astype(np.uint8))
 
 
 def apply_aspect_ratio(img, aspect_factor):
     """Apply aspect ratio distortion (stretch width)."""
-    width, height = img.size
-    new_width = int(width * aspect_factor)
-    stretched = img.resize((new_width, height), Image.Resampling.BILINEAR)
-    
-    # Center crop/pad back to original size
-    result = Image.new('L', (width, height), color=0)
-    offset = (width - new_width) // 2
-    if offset >= 0:
-        result.paste(stretched, (offset, 0))
-    else:
-        # Crop from center
-        crop_offset = -offset
-        cropped = stretched.crop((crop_offset, 0, crop_offset + width, height))
-        result.paste(cropped, (0, 0))
-    
-    return result
+    # Convert PIL Image to numpy array (0-1 float32)
+    img_array = np.array(img, dtype=np.float32) / 255.0
+    # Apply aspect ratio using DataAugmentation function
+    result_array = apply_aspect_ratio_np(img_array, aspect_factor)
+    # Convert back to PIL Image (0-255 uint8)
+    return Image.fromarray((result_array * 255).astype(np.uint8))
 
 
 def find_bounding_box(img):
@@ -328,32 +329,20 @@ def crop_resize_with_margin(img, target_size, margin=2, bbox=None):
     Returns:
         PIL Image of size target_size x target_size with maximized digit and exactly margin pixels on all sides
     """
-    # Initialize debug counter if not exists
-    if not hasattr(crop_resize_with_margin, 'debug_count'):
-        crop_resize_with_margin.debug_count = 0
-    
     # Use provided bbox or find it
     if bbox is None:
         bbox = find_bounding_box(img)
+
     if bbox is None:
         # No content, return black image of target size
         return Image.new('L', (target_size, target_size), color=0)
     
     x_min, y_min, x_max, y_max = bbox
     
-    # DEBUG: Print bounding box info for first 10 images only (SUPPRESSED for full run)
-    # if crop_resize_with_margin.debug_count < 10:
-    #     print(f"DEBUG crop_resize_with_margin (image {crop_resize_with_margin.debug_count + 1}/10):")
-    #     print(f"  Original image size: {img.size}")
-    #     print(f"  Bounding box: ({x_min}, {y_min}) to ({x_max}, {y_max})")
-    
     # Crop to bounding box (no margin yet)
     cropped = img.crop((x_min, y_min, x_max, y_max))
     crop_width = x_max - x_min
     crop_height = y_max - y_min
-    
-    # if crop_resize_with_margin.debug_count < 10:
-    #     print(f"  Crop dimensions: {crop_width} x {crop_height}")
     
     # Calculate target digit size (area to fill)
     digit_size = target_size - 2 * margin
@@ -363,18 +352,6 @@ def crop_resize_with_margin(img, target_size, margin=2, bbox=None):
     scale = digit_size / max(crop_width, crop_height)
     new_width = int(crop_width * scale)
     new_height = int(crop_height * scale)
-    
-    # DEBUG: Increment counter (kept for image saving)
-    if crop_resize_with_margin.debug_count < 10:
-        crop_resize_with_margin.debug_count += 1
-        # DEBUG prints suppressed for full run:
-        # print(f"  Target digit size: {digit_size} (target_size={target_size}, margin={margin})")
-        # print(f"  Scale factor: {scale:.4f}")
-        # print(f"  Resized dimensions: {new_width} x {new_height}")
-        # print(f"  Final image fill: {new_width}/{digit_size} x {new_height}/{digit_size} = {new_width/digit_size*100:.1f}% x {new_height/digit_size*100:.1f}%")
-        # print()
-    else:
-        crop_resize_with_margin.debug_count += 1
     
     # Resize maintaining aspect ratio
     resized = cropped.resize((new_width, new_height), Image.Resampling.LANCZOS)
@@ -386,17 +363,6 @@ def crop_resize_with_margin(img, target_size, margin=2, bbox=None):
     paste_x = margin + (digit_size - new_width) // 2
     paste_y = margin + (digit_size - new_height) // 2
     result.paste(resized, (paste_x, paste_y))
-    
-    # DEBUG: Save first 10 images for inspection
-    if crop_resize_with_margin.debug_count <= 10:
-        import os
-        debug_dir = "./data/font_digits_debug"
-        os.makedirs(debug_dir, exist_ok=True)
-        # Use count for filename (1-indexed, count is already incremented)
-        debug_filename = f"{debug_dir}/debug_{crop_resize_with_margin.debug_count:02d}.png"
-        result.save(debug_filename)
-        if crop_resize_with_margin.debug_count == 10:
-            print(f"DEBUG: Saved 10 example images to {debug_dir}/")
     
     return result
 
@@ -423,20 +389,18 @@ def apply_stroke_variation(img, variation):
     if variation == 0:
         return img
     
-    img_array = np.array(img)
+    # Convert PIL Image to numpy array (0-1 float32)
+    img_array = np.array(img, dtype=np.float32) / 255.0
     
     if variation == -1:
-        # Thinning: 3x3 cross-shaped kernel, 1 iteration
-        kernel = np.array([[0, 1, 0],
-                          [1, 1, 1],
-                          [0, 1, 0]], np.uint8)
-        eroded = cv2.erode(img_array, kernel, iterations=1)
-        return Image.fromarray(eroded)
+        # Apply thinning using DataAugmentation function
+        result_array = apply_thinning_np(img_array)
     else:  # variation == 1
-        # Thickening: 2x2 kernel, 1 iteration
-        kernel = np.ones((2, 2), np.uint8)
-        dilated = cv2.dilate(img_array, kernel, iterations=1)
-        return Image.fromarray(dilated)
+        # Apply thickening using DataAugmentation function
+        result_array = apply_thickening_np(img_array)
+    
+    # Convert back to PIL Image (0-255 uint8)
+    return Image.fromarray((result_array * 255).astype(np.uint8))
 
 
 def apply_random_pixel_erasure(img, erasure_percent=ERASURE_PERCENT):
@@ -450,29 +414,12 @@ def apply_random_pixel_erasure(img, erasure_percent=ERASURE_PERCENT):
     Returns:
         PIL Image with some pixels erased
     """
-    img_array = np.array(img)
-    
-    # Find all white pixels (stroke pixels, value > threshold)
-    white_mask = img_array > 25  # Threshold for "white"
-    white_indices = np.where(white_mask)
-    
-    if len(white_indices[0]) == 0:
-        return img
-    
-    total_white = len(white_indices[0])
-    n_to_erase = int(total_white * erasure_percent)
-    
-    if n_to_erase == 0:
-        return img
-    
-    # Randomly select pixels to erase
-    indices_to_erase = np.random.choice(total_white, n_to_erase, replace=False)
-    
-    for idx in indices_to_erase:
-        y, x = white_indices[0][idx], white_indices[1][idx]
-        img_array[y, x] = 0
-    
-    return Image.fromarray(img_array)
+    # Convert PIL Image to numpy array (0-1 float32)
+    img_array = np.array(img, dtype=np.float32) / 255.0
+    # Apply erasure using DataAugmentation function
+    result_array = apply_random_pixel_erasure_np(img_array, erasure_percent)
+    # Convert back to PIL Image (0-255 uint8)
+    return Image.fromarray((result_array * 255).astype(np.uint8))
 
 
 def apply_stroke_breaks(img, break_size=STROKE_BREAK_SIZE, num_breaks=STROKE_BREAK_COUNT):
@@ -487,35 +434,29 @@ def apply_stroke_breaks(img, break_size=STROKE_BREAK_SIZE, num_breaks=STROKE_BRE
     Returns:
         PIL Image with stroke breaks
     """
-    img_array = np.array(img)
-    height, width = img_array.shape
-    
-    # Find all white pixels (stroke pixels)
-    white_mask = img_array > 25
-    white_indices = np.where(white_mask)
-    
-    if len(white_indices[0]) == 0:
-        return img
-    
-    for _ in range(num_breaks):
-        # Pick a random stroke pixel as center of the break
-        idx = np.random.randint(len(white_indices[0]))
-        center_y, center_x = white_indices[0][idx], white_indices[1][idx]
-        
-        # Create a small rectangular break around the center
-        half_size = break_size // 2
-        y_start = max(0, center_y - half_size)
-        y_end = min(height, center_y + half_size + 1)
-        x_start = max(0, center_x - half_size)
-        x_end = min(width, center_x + half_size + 1)
-        
-        # Erase the break area
-        img_array[y_start:y_end, x_start:x_end] = 0
-    
-    return Image.fromarray(img_array)
+    # Convert PIL Image to numpy array (0-1 float32)
+    img_array = np.array(img, dtype=np.float32) / 255.0
+    # Apply stroke breaks using DataAugmentation function
+    result_array = apply_stroke_breaks_np(img_array, break_size, num_breaks)
+    # Convert back to PIL Image (0-255 uint8)
+    return Image.fromarray((result_array * 255).astype(np.uint8))
 
+def apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None):
+    """
+    Apply aspect ratio, stroke variation, noise, and crop/resize with margin.
+    No defaults. Everything must be specified.
+    """
+    img = apply_aspect_ratio(img, aspect_ratio)
+    img = apply_stroke_variation(img, stroke_var)
+    if func is not None:
+        img = func(img)
+    # Find bounding box BEFORE noise
+    bbox = find_bounding_box(img)
+    img = apply_noise(img)
+    img = crop_resize_with_margin(img, target_size, margin=margin, bbox=bbox)
+    return img
 
-def generate_augmented_variations(base_img, target_size):
+def generate_augmented_variations(base_img, target_size, margin=2):
     """
     Generate all augmented variations for a base digit image.
     
@@ -551,12 +492,7 @@ def generate_augmented_variations(base_img, target_size):
         else:
             angle = np.random.uniform(*ROTATION_RANGE_POS)
         img = apply_rotation(img, angle)
-        img = apply_aspect_ratio(img, aspect_ratio)
-        img = apply_stroke_variation(img, stroke_var)
-        # Find bounding box BEFORE noise
-        bbox = find_bounding_box(img)
-        img = apply_noise(img)
-        img = crop_resize_with_margin(img, target_size, margin=2, bbox=bbox)
+        img = apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
         variations.append(img)
         
         # Variation 2: SHEAR (random from either negative or positive range)
@@ -566,44 +502,25 @@ def generate_augmented_variations(base_img, target_size):
         else:
             shear = np.random.uniform(*SHEAR_RANGE_POS)
         img = apply_shear(img, shear)
-        img = apply_aspect_ratio(img, aspect_ratio)
-        img = apply_stroke_variation(img, stroke_var)
-        # Find bounding box BEFORE noise
-        bbox = find_bounding_box(img)
-        img = apply_noise(img)
-        img = crop_resize_with_margin(img, target_size, margin=2, bbox=bbox)
+        img = apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
         variations.append(img)
         
         # Variation 3: 15% RANDOM PIXEL ERASURE (no rotation/shear)
         img = base_img.copy()
-        img = apply_aspect_ratio(img, aspect_ratio)
-        img = apply_stroke_variation(img, stroke_var)
-        img = apply_random_pixel_erasure(img)
-        # Find bounding box BEFORE noise
-        bbox = find_bounding_box(img)
-        img = apply_noise(img)
-        img = crop_resize_with_margin(img, target_size, margin=2, bbox=bbox)
+        img = apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=apply_random_pixel_erasure)
         variations.append(img)
         
         # Variation 4: 6 STROKE BREAKS at 4px (no rotation/shear)
         img = base_img.copy()
-        img = apply_aspect_ratio(img, aspect_ratio)
-        img = apply_stroke_variation(img, stroke_var)
-        img = apply_stroke_breaks(img)
-        # Find bounding box BEFORE noise
-        bbox = find_bounding_box(img)
-        img = apply_noise(img)
-        img = crop_resize_with_margin(img, target_size, margin=2, bbox=bbox)
+        img = apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=apply_stroke_breaks)
         variations.append(img)
     
     # Add 1 original: no rotation, no shear, no erasure, no breaks, stroke=0, aspect=1.0
     img = base_img.copy()
-    img = apply_aspect_ratio(img, 1.0)  # Normal aspect
-    # No stroke variation (stroke=0, normal)
     # Find bounding box BEFORE noise
     bbox = find_bounding_box(img)
     img = apply_noise(img)
-    img = crop_resize_with_margin(img, target_size, margin=2, bbox=bbox)
+    img = crop_resize_with_margin(img, target_size, margin=margin, bbox=bbox)
     variations.append(img)
     
     return variations
@@ -618,10 +535,9 @@ def get_font_weights_to_use(files):
     Returns:
         List of (weight_name, url) tuples (single item)
     """
-    # Priority order: regular first, then bold, then thin
-    priority_order = ["regular", "400", "500", "700", "600", "800", "900", "300", "200", "100"]
     
-    for w in priority_order:
+    for w in PREFERRED_WEIGHTS:
+        #Check if w is a key in files
         if w in files:
             return [(w, files[w])]
     
@@ -651,7 +567,7 @@ def generate_digit_images(api_key, output_dir, target_size=28):
         target_size: Output image size (28 or 64, default: 64)
         
     Returns:
-        Tuple of (x_data, y_softmax, y_sigmoid)
+        Tuple of ((x_train, y_train_softmax), (x_test, y_test_softmax))
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -660,42 +576,51 @@ def generate_digit_images(api_key, output_dir, target_size=28):
     all_labels = []
     all_font_families = []  # Track font family for each sample
     all_font_categories = []  # Track font category for each sample
-    font_count = 0
-    weight_count = 0
-    png_files_saved = 0  # Count PNG files saved
+    all_pil_images = []  # Track PIL images for debug saving
+    font_count = 0  # Counts fonts that successfully downloaded (one weight per font)
     
     # Get fonts by category (75 handwriting, 20 sans-serif, 10 display)
-    all_fonts = get_all_fonts_by_category(api_key)
+    all_fonts_by_category = get_all_fonts_by_category(api_key)
     
     # Calculate expected output
     variations_per_digit = COMBINATIONS_COUNT * 4 + 1  # 27 combinations × 4 + 1 original = 109
     
     # Estimate total: fonts × 1 weight × 10 digits × variations
-    est_total = len(all_fonts) * 10 * variations_per_digit
+    total_fonts = sum(len(fonts) for fonts in all_fonts_by_category.values())
+    est_total = total_fonts * 10 * variations_per_digit
     print(f"Estimated output: ~{est_total:,} images")
-    print(f"({len(all_fonts)} fonts × 1 weight × 10 digits × {variations_per_digit} variations)\n")
+    print(f"({total_fonts} fonts × 1 weight × 10 digits × {variations_per_digit} variations)\n")
     
-    for font_idx, font in enumerate(all_fonts):
-        family = font["family"]
-        category = font.get("_category", "unknown")
-        files = font.get("files", {})
-        
-        # Get weights to use (thin, regular, bold)
-        weights = get_font_weights_to_use(files)
-        
-        if not weights:
-            continue
-        
-        font_count += 1
-        print(f"[{font_count}/{len(all_fonts)}] {family} ({category}) - {len(weights)} weight(s)")
-        
-        for weight_name, font_url in weights:
+    # Track only successful fonts (for train/test split)
+    successful_fonts_by_category = {cat: [] for cat in ["handwriting", "sans-serif", "display"]}
+    
+    # Iterate over all fonts across all categories
+    for category in ["handwriting", "sans-serif", "display"]:
+        for font in all_fonts_by_category.get(category, []):
+            family = font["family"]
+            categoryC = font["_category"]
+            files = font.get("files", {})
+            
+            # Get weights to use (thin, regular, bold)
+            weights = get_font_weights_to_use(files)
+            
+            if not weights:
+                continue
+            
+            # weights always has exactly one item (see get_font_weights_to_use)
+            weight_name, font_url = weights[0]
+            
             # Download font
             font_path = download_font(font_url, f"{family}-{weight_name}")
             if not font_path:
                 continue
             
-            weight_count += 1
+            # Font successfully processed - add to successful fonts
+            successful_fonts_by_category[categoryC].append(font)
+            
+            # Only count fonts that successfully downloaded (one weight per font)
+            font_count += 1
+            print(f"[{font_count}/{total_fonts}] {family} ({categoryC}) - {weight_name}")
             
             try:
                 # Generate images for each digit
@@ -711,20 +636,15 @@ def generate_digit_images(api_key, output_dir, target_size=28):
                     # Generate all variations (109 per digit)
                     all_variations = generate_augmented_variations(base_img, target_size=target_size)
                     
-                    for var_idx, img in enumerate(all_variations):
-                        # Save individual image
-                        safe_family = family.replace(" ", "_").replace("/", "_")
-                        filename = f"{safe_family}_{weight_name}_d{digit}_v{var_idx:02d}.png"
-                        img.save(output_path / filename)
-                        png_files_saved += 1
-                        
+                    for img in all_variations:
                         # Collect for numpy array
                         img_array = np.array(img, dtype=np.float32) / 255.0
                         all_images.append(img_array)
                         all_labels.append(digit_label)
                         all_font_families.append(family)  # Track font family
-                        all_font_categories.append(category)  # Track font category
-            
+                        all_font_categories.append(categoryC)  # Track font category
+                        all_pil_images.append(img)  # Track PIL image for debug saving
+        
             finally:
                 # Clean up temporary font file
                 try:
@@ -734,10 +654,22 @@ def generate_digit_images(api_key, output_dir, target_size=28):
     
     print(f"\n{'='*60}")
     print(f"Generated {len(all_images):,} digit images")
-    print(f"  PNG files saved: {png_files_saved:,}")
     print(f"  Fonts used: {font_count}")
-    print(f"  Font weights used: {weight_count}")
-    print(f"Images saved to: {output_path}")
+    
+    # Save 5% of images randomly to debug directory
+    if all_pil_images:
+        debug_dir = output_path / "debug"
+        debug_dir.mkdir(exist_ok=True)
+        num_debug = max(1, int(len(all_pil_images) * 0.05))
+        debug_indices = random.sample(range(len(all_pil_images)), num_debug)
+        for idx in debug_indices:
+            safe_family = all_font_families[idx].replace(" ", "_").replace("/", "_")
+            digit = all_labels[idx]
+            filename = f"debug_{idx:06d}_{safe_family}_d{digit}.png"
+            all_pil_images[idx].save(debug_dir / filename)
+        print(f"  Debug images saved: {num_debug:,} ({num_debug/len(all_pil_images)*100:.1f}%) to {debug_dir}/")
+    
+    print(f"Images will be saved to: {output_path}")
     
     # Convert to numpy arrays and split into train/test
     if all_images:
@@ -746,11 +678,6 @@ def generate_digit_images(api_key, output_dir, target_size=28):
         
         # Softmax labels (integer)
         y_softmax = np.array(all_labels, dtype=np.int32)
-        
-        # Sigmoid labels (one-hot)
-        y_sigmoid = np.zeros((len(all_labels), 10), dtype=np.float32)
-        for i, label in enumerate(all_labels):
-            y_sigmoid[i, label] = 1.0
         
         # Split into train/test (80/20) by digit and font category
         print(f"\n{'='*60}")
@@ -761,35 +688,32 @@ def generate_digit_images(api_key, output_dir, target_size=28):
         train_indices = []
         test_indices = []
         
-        # Split for each digit (0-9)
-        for digit in range(10):
-            digit_mask = y_softmax == digit
-            digit_indices = np.where(digit_mask)[0]
+        # Outer loop: Split by category (entire font families move to train or test)
+        for category in ["handwriting", "sans-serif", "display"]:
+            # Get unique font families in this category (only successful fonts)
+            unique_families = [font["family"] for font in successful_fonts_by_category.get(category, [])]
+            X = len(unique_families)
             
-            # Group by font category
-            for category in ["handwriting", "sans-serif", "display"]:
-                category_mask = np.array([all_font_categories[i] == category for i in digit_indices])
-                category_indices = digit_indices[category_mask]
-                
-                if len(category_indices) == 0:
-                    continue
-                
-                # Get unique font families in this category for this digit
-                font_families_in_category = [all_font_families[i] for i in category_indices]
-                unique_families = list(set(font_families_in_category))
-                
-                # Shuffle for random split
-                np.random.seed(42)  # For reproducibility
-                np.random.shuffle(unique_families)
-                
-                # Split fonts 80/20
-                split_idx = int(len(unique_families) * 0.8)
-                train_families = set(unique_families[:split_idx])
-                test_families = set(unique_families[split_idx:])
-                
-                # Assign samples to train/test based on font family
-                for idx in category_indices:
-                    if all_font_families[idx] in train_families:
+            # Require at least 2 font families for train/test split
+            if X < 2:
+                raise ValueError(f"Category '{category}' has only {X} font family/families. Need at least 2 for train/test split.")
+            
+            # Calculate train/test split: 20% test with floor of 1
+            Ntest = max(int(X * 0.2), 1)
+            Ntrain = X - Ntest
+            
+            # Shuffle for random split
+            np.random.seed(42)  # For reproducibility
+            np.random.shuffle(unique_families)
+            
+            # Split families: first Ntrain to train, last Ntest to test
+            train_families = set(unique_families[:Ntrain])
+            test_families = set(unique_families[Ntrain:])
+            
+            # Assign samples based on font family (entire families go to train or test)
+            for idx, font_family in enumerate(all_font_families):
+                if all_font_categories[idx] == category:  # Only process samples in current category
+                    if font_family in train_families:
                         train_indices.append(idx)
                     else:
                         test_indices.append(idx)
@@ -805,11 +729,9 @@ def generate_digit_images(api_key, output_dir, target_size=28):
         # Create train/test splits
         x_train = x_data[train_indices]
         y_train_softmax = y_softmax[train_indices]
-        y_train_sigmoid = y_sigmoid[train_indices]
         
         x_test = x_data[test_indices]
         y_test_softmax = y_softmax[test_indices]
-        y_test_sigmoid = y_sigmoid[test_indices]
         
         # Print split statistics
         print(f"\nTrain set: {len(x_train):,} samples")
@@ -827,35 +749,29 @@ def generate_digit_images(api_key, output_dir, target_size=28):
             print(f"  {digit}   | {train_count:5,} | {test_count:4,} | {total_count:5,}")
         
         # Save train/test splits (include size in filename)
-        train_softmax_path = output_path / f"font_digits_train_{target_size}x{target_size}_softmax.npz"
-        train_sigmoid_path = output_path / f"font_digits_train_{target_size}x{target_size}_sigmoid.npz"
-        test_softmax_path = output_path / f"font_digits_test_{target_size}x{target_size}_softmax.npz"
-        test_sigmoid_path = output_path / f"font_digits_test_{target_size}x{target_size}_sigmoid.npz"
+        train_softmax_path = output_path / f"font_digits_train_augmented_{target_size}x{target_size}.npz"
+        test_softmax_path = output_path / f"font_digits_test_augmented_{target_size}x{target_size}.npz"
         
-        np.savez(train_softmax_path, x=x_train, y=y_train_softmax)
-        np.savez(train_sigmoid_path, x=x_train, y=y_train_sigmoid)
-        np.savez(test_softmax_path, x=x_test, y=y_test_softmax)
-        np.savez(test_sigmoid_path, x=x_test, y=y_test_sigmoid)
+        # Convert to uint8 for smaller file size (consistent with other augmentation scripts)
+        x_train_uint8 = (x_train * 255).astype(np.uint8)
+        x_test_uint8 = (x_test * 255).astype(np.uint8)
+        
+        np.savez_compressed(train_softmax_path, x=x_train_uint8, y=y_train_softmax)
+        np.savez_compressed(test_softmax_path, x=x_test_uint8, y=y_test_softmax)
         
         print(f"\n{'='*60}")
         print("Saved numpy arrays:")
-        print(f"  Train Softmax: {train_softmax_path}")
-        print(f"    x shape: {x_train.shape}")
+        print(f"  Train: {train_softmax_path}")
+        print(f"    x shape: {x_train_uint8.shape} (uint8, 0-255)")
         print(f"    y shape: {y_train_softmax.shape} (integer labels 0-9)")
-        print(f"  Train Sigmoid: {train_sigmoid_path}")
-        print(f"    x shape: {x_train.shape}")
-        print(f"    y shape: {y_train_sigmoid.shape} (one-hot labels)")
-        print(f"  Test Softmax: {test_softmax_path}")
-        print(f"    x shape: {x_test.shape}")
+        print(f"  Test: {test_softmax_path}")
+        print(f"    x shape: {x_test_uint8.shape} (uint8, 0-255)")
         print(f"    y shape: {y_test_softmax.shape} (integer labels 0-9)")
-        print(f"  Test Sigmoid: {test_sigmoid_path}")
-        print(f"    x shape: {x_test.shape}")
-        print(f"    y shape: {y_test_sigmoid.shape} (one-hot labels)")
         print(f"{'='*60}")
         
-        return (x_train, y_train_softmax, y_train_sigmoid), (x_test, y_test_softmax, y_test_sigmoid)
+        return (x_train, y_train_softmax), (x_test, y_test_softmax)
     
-    return None, None
+    raise ValueError("No images were generated. All fonts may have failed to download or render.")
 
 
 def load_font_digits(npz_path):
@@ -863,42 +779,13 @@ def load_font_digits(npz_path):
     Load previously generated font digits.
     
     Args:
-        npz_path: Path to the .npz file (softmax or sigmoid version)
+        npz_path: Path to the .npz file
         
     Returns:
         Tuple of (x_data, y_data)
     """
     data = np.load(npz_path)
     return data['x'], data['y']
-
-
-def load_font_digits_train_test(data_dir):
-    """
-    Load train/test splits of font digits.
-    
-    Args:
-        data_dir: Directory containing the train/test .npz files
-        
-    Returns:
-        Tuple of ((x_train, y_train), (x_test, y_test)) for softmax format
-    """
-    data_path = Path(data_dir)
-    
-    train_softmax_path = data_path / "font_digits_train_softmax.npz"
-    test_softmax_path = data_path / "font_digits_test_softmax.npz"
-    train_sigmoid_path = data_path / "font_digits_train_sigmoid.npz"
-    test_sigmoid_path = data_path / "font_digits_test_sigmoid.npz"
-    
-    if train_softmax_path.exists() and test_softmax_path.exists():
-        train_data = np.load(train_softmax_path)
-        test_data = np.load(test_softmax_path)
-        return (train_data['x'], train_data['y']), (test_data['x'], test_data['y'])
-    elif train_sigmoid_path.exists() and test_sigmoid_path.exists():
-        train_data = np.load(train_sigmoid_path)
-        test_data = np.load(test_sigmoid_path)
-        return (train_data['x'], train_data['y']), (test_data['x'], test_data['y'])
-    else:
-        raise FileNotFoundError(f"Train/test files not found in {data_dir}")
 
 
 def main():
