@@ -44,29 +44,48 @@ from pathlib import Path
 # HELPER: Build sub-models that extract intermediate outputs
 # =============================================================================
 
+def _is_softmax_model(model):
+    """
+    Check if the model's final layer has softmax activation.
+    
+    Returns:
+        True if model outputs softmax probabilities (old models)
+        False if model outputs logits (new models)
+    """
+    last_layer = model.layers[-1]
+    if hasattr(last_layer, 'activation'):
+        activation_name = last_layer.activation.__name__
+        return activation_name == 'softmax'
+    return False  # Assume logits if no activation info
+
+
 def _build_logit_model(model):
     """
-    Build a model that outputs raw logits (pre-softmax).
+    Build a model that outputs raw logits (pre-softmax) from a softmax model.
     
-    Your architecture ends with:
-        Dense(neurons, activation='elu')   ← penultimate
-        BatchNormalization()
-        Dropout(0.5)
-        Dense(11, activation='softmax')  ← final
+    Only needed for OLD models that have softmax baked into the final layer.
+    For NEW models (logit output), use model directly.
     
-    We create a new model that's identical but outputs pre-softmax logits.
+    Architecture:
+        ... → Dense(neurons, activation='elu') → BatchNorm → Dropout → Dense(N, activation='softmax')
+    
+    This function creates a new model that outputs pre-softmax logits by:
+        1. Finding the final Dense layer (output layer)
+        2. Getting its weights (W, b)
+        3. Building a model that computes W*x + b without softmax
     """
-    # Find the final Dense layer (the one with 11 units)
+    # Find the final Dense layer (last one in the model - the output layer)
     final_dense = None
     final_dense_idx = None
-    for i, layer in enumerate(model.layers):
-        if isinstance(layer, keras.layers.Dense) and layer.units == 11:
+    for i in range(len(model.layers) - 1, -1, -1):
+        layer = model.layers[i]
+        if isinstance(layer, keras.layers.Dense):
             final_dense = layer
             final_dense_idx = i
             break
     
     if final_dense is None:
-        raise ValueError("Could not find final Dense(11) layer in model")
+        raise ValueError("Could not find final Dense layer in model")
     
     if final_dense_idx == 0:
         raise ValueError("Final Dense layer is the first layer (unexpected architecture)")
@@ -77,11 +96,9 @@ def _build_logit_model(model):
     biases = tf.constant(biases, dtype=tf.float32)
     
     # Create a model that outputs everything up to (but not including) the final Dense layer
-    # For Sequential models, we can use the layers directly
     if isinstance(model, keras.Sequential):
         # Get input shape - ensure model is built
         if model.input_shape is None:
-            # Build model with dummy input
             dummy_shape = model.layers[0].input_shape[1:] if hasattr(model.layers[0], 'input_shape') else (28, 28, 1)
             dummy_input = np.zeros((1,) + dummy_shape, dtype=np.float32)
             _ = model(dummy_input)
@@ -91,7 +108,6 @@ def _build_logit_model(model):
         x = intermediate_input
         
         # Apply all layers up to (but not including) final_dense
-        # We can reuse the existing layers - they're already built
         for layer in model.layers[:final_dense_idx]:
             x = layer(x)
         
@@ -121,17 +137,21 @@ def _build_feature_model(model):
     """
     Build a model that outputs the penultimate dense layer features.
     
-    Extracts the output of Dense(96, activation='elu') — the 96-dim
+    Extracts the output of Dense(N, activation='elu') — the N-dim
     feature vector before BatchNorm/Dropout/final Dense.
     
     This is the representation your CNN learned for classification.
     """
-    # Find the penultimate Dense layer (the one with neurons != 11)
+    # Find the penultimate Dense layer (second-to-last Dense layer)
+    # Skip the first Dense we find (output layer), take the second one
     penultimate_dense = None
+    dense_count = 0
     for layer in reversed(model.layers):
-        if isinstance(layer, keras.layers.Dense) and layer.units != 11:
-            penultimate_dense = layer
-            break
+        if isinstance(layer, keras.layers.Dense):
+            dense_count += 1
+            if dense_count == 2:  # Second Dense from the end
+                penultimate_dense = layer
+                break
     
     if penultimate_dense is None:
         raise ValueError("Could not find penultimate Dense layer in model")
@@ -162,20 +182,30 @@ class EnergyScorer:
     Temperature T can sharpen the separation (default T=1).
     """
     
-    def __init__(self, model, temperature=1.0):
+    def __init__(self, model, temperature=1.0, batch_size=128):
         """
         Args:
-            model: Your trained Keras classifier (with softmax output)
+            model: Your trained Keras classifier (softmax or logit output)
             temperature: Temperature for scaling logits (default 1.0, try 0.5-2.0)
+            batch_size: Batch size for predictions (default 128)
         """
         self.model = model
         self.temperature = temperature
-        self.logit_model = _build_logit_model(model)
+        self.batch_size = batch_size
         self._threshold = None  # Set via calibrate() or manually
+        
+        # Detect model type and build logit model if needed
+        self._is_softmax = _is_softmax_model(model)
+        if self._is_softmax:
+            print("  Model has softmax activation, building logit extractor...")
+            self._logit_model = _build_logit_model(model)
+        else:
+            print("  Model outputs logits directly, no conversion needed.")
+            self._logit_model = model
     
     def _get_logits(self, images):
         """Get raw logits for a batch of images. Images should be preprocessed."""
-        return self.logit_model.predict(images, verbose=0, batch_size=128)
+        return self._logit_model.predict(images, verbose=0, batch_size=self.batch_size)
     
     def _compute_energy(self, logits):
         """

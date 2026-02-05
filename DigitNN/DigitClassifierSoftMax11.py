@@ -57,7 +57,10 @@ class BalancedLoss(keras.losses.Loss):
         self.num_classes = num_classes
         self.var_penalty = var_penalty
         self.digit_only_variance = digit_only_variance
-        self.ce = keras.losses.SparseCategoricalCrossentropy(reduction='none')
+        self.ce = keras.losses.SparseCategoricalCrossentropy(
+            from_logits=True,
+            reduction='none'
+        )
     
     def call(self, y_true, y_pred):
         # Per-sample cross-entropy losses
@@ -155,7 +158,7 @@ lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=64):
     if use_balanced_loss:
         loss_function = BalancedLoss(num_classes=11, var_penalty=lambda_weight)
     else:
-        loss_function = 'sparse_categorical_crossentropy'
+        loss_function = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
     accuracy_metric = 'accuracy'
     
@@ -192,7 +195,8 @@ lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=64):
         layers.Dense(neurons_in_dense_layer, activation='elu'),
         layers.BatchNormalization(),
         layers.Dropout(DROPOUT_RATE),
-        layers.Dense(11, activation=output_activation)
+        layers.Dense(11)
+        #layers.Dense(11, activation=output_activation)
     ])
     
     model.compile(
@@ -605,6 +609,13 @@ def train_digit_classifier(
         print("Using untrained model (predictions will be random)")
         return model
 
+def is_logit_model(model):
+    """Check if model outputs logits (no softmax) or probabilities (softmax)."""
+    last_layer = model.layers[-1]
+    if hasattr(last_layer, 'activation'):
+        activation_name = last_layer.activation.__name__
+        return activation_name != 'softmax'  # True if logits, False if softmax
+    return True  # Assume logits if no activation info
 
 def classify_digit(classifier_model, digit_image, input_size=28):
     """
@@ -640,8 +651,12 @@ def classify_digit(classifier_model, digit_image, input_size=28):
     digit_input = digit_normalized.reshape(1, input_size, input_size, 1)
     
     # Predict
-    predictions = classifier_model.predict(digit_input, verbose=0)
-    
+    if is_logit_model(classifier_model):
+        logits = classifier_model.predict(digit_input, verbose=0)
+        predictions = tf.nn.softmax(logits).numpy()
+    else:
+        predictions = classifier_model.predict(digit_input, verbose=0)
+
     # Get predicted class (0-10)
     predicted_class = int(np.argmax(predictions[0]))
     confidence = float(predictions[0][predicted_class])
@@ -665,7 +680,7 @@ def classify_digit(classifier_model, digit_image, input_size=28):
             print(f"  Energy-based OOD detection: Predicted class {predicted_class} is not OOD")
     else:
         score = None
-        print(f"  Energy scorer not calibrated, using default threshold")
+        print(f"  Energy scorer not calibrated, returning None for score")
     
     # Return the predicted class (0-9 for digits, 10 for non-digit)
     return predicted_class, confidence, score
