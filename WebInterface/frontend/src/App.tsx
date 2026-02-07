@@ -33,6 +33,7 @@ interface AppState {
 	loading: boolean;
 	modelsLoading: boolean;
 	showResults: boolean;
+	showImageModal: boolean;
 }
 
 export class App extends Component<{}, AppState> {
@@ -47,7 +48,8 @@ export class App extends Component<{}, AppState> {
 			error: "",
 			loading: false,
 			modelsLoading: true,
-			showResults: false
+			showResults: false,
+			showImageModal: false
 		};
 	}
 
@@ -166,8 +168,47 @@ export class App extends Component<{}, AppState> {
 		}
 	};
 
+	openImageInNewTab = () => {
+		const { previewUrl, selectedFile } = this.state;
+		if (previewUrl) {
+			const newWindow = window.open('', '_blank');
+			if (newWindow) {
+				newWindow.document.write(`
+					<!DOCTYPE html>
+					<html>
+						<head>
+							<title>Uploaded Image - ${selectedFile?.name || 'Image'}</title>
+							<style>
+								body {
+									margin: 0;
+									padding: 20px;
+									display: flex;
+									justify-content: center;
+									align-items: center;
+									min-height: 100vh;
+									background: #1a1a2e;
+								}
+								img {
+									max-width: 100%;
+									height: auto;
+									border: 2px solid #444;
+									border-radius: 8px;
+									box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+								}
+							</style>
+						</head>
+						<body>
+							<img src="${previewUrl}" alt="Uploaded image" />
+						</body>
+					</html>
+				`);
+				newWindow.document.close();
+			}
+		}
+	};
+
 	render() {
-		const { models, selectedModel, selectedFile, previewUrl, results, error, loading, modelsLoading, showResults } = this.state;
+		const { models, selectedModel, selectedFile, previewUrl, results, error, loading, modelsLoading, showResults, showImageModal } = this.state;
 		const canClassify = selectedModel !== "" && selectedFile !== null;
 
 		// Convert models to react-select format with groups
@@ -222,42 +263,10 @@ export class App extends Component<{}, AppState> {
 							<div class="input-with-icon">
 								<i 
 									class={`fa-solid ${previewUrl ? 'fa-eye clickable-icon' : 'fa-file-image'}`}
-									title={previewUrl ? "Click to view uploaded image in new tab" : ""}
+									title={previewUrl ? "Click to preview image" : ""}
 									onClick={() => {
 										if (previewUrl) {
-											const newWindow = window.open('', '_blank');
-											if (newWindow) {
-												newWindow.document.write(`
-													<!DOCTYPE html>
-													<html>
-														<head>
-															<title>Uploaded Image - ${selectedFile?.name || 'Image'}</title>
-															<style>
-																body {
-																	margin: 0;
-																	padding: 20px;
-																	display: flex;
-																	justify-content: center;
-																	align-items: center;
-																	min-height: 100vh;
-																	background: #f5f5f5;
-																}
-																img {
-																	max-width: 100%;
-																	height: auto;
-																	border: 2px solid #ddd;
-																	border-radius: 8px;
-																	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-																}
-															</style>
-														</head>
-														<body>
-															<img src="${previewUrl}" alt="Uploaded image" />
-														</body>
-													</html>
-												`);
-												newWindow.document.close();
-											}
+											this.setState({ showImageModal: true });
 										}
 									}}
 								></i>
@@ -328,6 +337,51 @@ export class App extends Component<{}, AppState> {
 						</div>
 					)}
 				</main>
+
+				{/* Image Preview Modal */}
+				{showImageModal && previewUrl && (
+					<div 
+						class="modal-overlay"
+						onClick={(e) => {
+							if (e.target === e.currentTarget) {
+								this.setState({ showImageModal: false });
+							}
+						}}
+						onKeyDown={(e) => {
+							if (e.key === 'Escape') {
+								this.setState({ showImageModal: false });
+							}
+						}}
+					>
+						<div class="modal-content">
+							<div class="modal-header">
+								<span class="modal-title">{selectedFile?.name || 'Image Preview'}</span>
+								<button 
+									class="modal-close"
+									onClick={() => this.setState({ showImageModal: false })}
+									aria-label="Close"
+								>
+									<i class="fa-solid fa-xmark"></i>
+								</button>
+							</div>
+							<div class="modal-body">
+								<img src={previewUrl} alt="Uploaded image preview" />
+							</div>
+							<div class="modal-footer">
+								<button 
+									class="btn-secondary"
+									onClick={() => {
+										this.openImageInNewTab();
+										this.setState({ showImageModal: false });
+									}}
+								>
+									<i class="fa-solid fa-arrow-up-right-from-square"></i>
+									Open in new tab
+								</button>
+							</div>
+						</div>
+					</div>
+				)}
 			</div>
 		);
 	}
