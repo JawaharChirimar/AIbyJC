@@ -22,19 +22,19 @@ Output: data/custom_one/ directory with train/test NPZ files (80/20 split)
 
 import argparse
 import numpy as np
+import sys
 import cv2
 from pathlib import Path
 import random
 
-# Output directory
-HOME_PATH = Path.home()
-if "ubuntu" in str(HOME_PATH).lower():
-    OUTPUT_DIR = Path.home() / "AIbyJC" / "DigitNN" / "data" / "custom_one"
-else:
-    OUTPUT_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data" / "custom_one"
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from DataManagement.DataCommon import (DATA_DIR)
+
+OUTPUT_DIR = DATA_DIR / "custom_one"
 # Number of variations to generate
-NUM_VARIATIONS = 5000
+NUM_VARIATIONS = 1250
 
 # Train/test split
 TRAIN_RATIO = 0.8
@@ -137,25 +137,19 @@ def generate_variations(output_size=28):
         
         # Note: No rotation/shear here - handled by training augmentation
         
-        # Normalize to [0, 1]
-        img_normalized = img.astype(np.float32) / 255.0
-        all_images.append(img_normalized)
+        # Keep as uint8 [0-255] - loader will normalize to [0,1]
+        all_images.append(img)
         all_labels.append(1)  # Label is always 1
         
         # Save individual PNG (first 50 as samples)
         if i < 50:
             cv2.imwrite(str(OUTPUT_DIR / f"custom_one_{i:04d}.png"), img)
     
-    # Convert to numpy arrays
-    x_data = np.array(all_images)
-    x_data = np.expand_dims(x_data, axis=-1)  # Shape: (N, output_size, output_size, 1)
+    # Convert to numpy arrays - keep as uint8 [0-255] and 3D (N, H, W)
+    # load_dataset_from_npz will normalize and add channel dimension
+    x_data = np.array(all_images, dtype=np.uint8)  # Shape: (N, output_size, output_size)
     y_softmax = np.array(all_labels, dtype=np.int32)  # Shape: (N,) - integer labels
-    
-    # Create one-hot labels for sigmoid
-    y_sigmoid = np.zeros((len(all_labels), 10), dtype=np.float32)
-    for i, label in enumerate(all_labels):
-        y_sigmoid[i, label] = 1.0
-    
+        
     # Train/test split (80/20)
     print(f"\nSplitting into train/test ({int(TRAIN_RATIO*100)}/{int((1-TRAIN_RATIO)*100)})...")
     
@@ -171,22 +165,16 @@ def generate_variations(output_size=28):
     # Create train/test sets
     x_train = x_data[train_indices]
     y_train_softmax = y_softmax[train_indices]
-    y_train_sigmoid = y_sigmoid[train_indices]
     
     x_test = x_data[test_indices]
     y_test_softmax = y_softmax[test_indices]
-    y_test_sigmoid = y_sigmoid[test_indices]
     
     # Save train/test NPZ files (include size in filename)
-    train_softmax_path = OUTPUT_DIR / f"custom_one_train_{output_size}x{output_size}_softmax.npz"
-    train_sigmoid_path = OUTPUT_DIR / f"custom_one_train_{output_size}x{output_size}_sigmoid.npz"
-    test_softmax_path = OUTPUT_DIR / f"custom_one_test_{output_size}x{output_size}_softmax.npz"
-    test_sigmoid_path = OUTPUT_DIR / f"custom_one_test_{output_size}x{output_size}_sigmoid.npz"
+    train_softmax_path = OUTPUT_DIR / f"custom_one_train_{output_size}x{output_size}.npz"
+    test_softmax_path = OUTPUT_DIR / f"custom_one_test_{output_size}x{output_size}.npz"
     
     np.savez(train_softmax_path, x=x_train, y=y_train_softmax)
-    np.savez(train_sigmoid_path, x=x_train, y=y_train_sigmoid)
     np.savez(test_softmax_path, x=x_test, y=y_test_softmax)
-    np.savez(test_sigmoid_path, x=x_test, y=y_test_sigmoid)
     
     print(f"\n{'='*60}")
     print(f"Generated {len(all_images)} images at {output_size}x{output_size}")
@@ -195,13 +183,9 @@ def generate_variations(output_size=28):
     print(f"Test set: {len(x_test):,} samples")
     print(f"\nSaved files:")
     print(f"  {train_softmax_path}")
-    print(f"    x: {x_train.shape}, y: {y_train_softmax.shape} (integer labels)")
-    print(f"  {train_sigmoid_path}")
-    print(f"    x: {x_train.shape}, y: {y_train_sigmoid.shape} (one-hot labels)")
+    print(f"    x: {x_train.shape} uint8 [0-255], y: {y_train_softmax.shape} (integer labels)")
     print(f"  {test_softmax_path}")
-    print(f"    x: {x_test.shape}, y: {y_test_softmax.shape} (integer labels)")
-    print(f"  {test_sigmoid_path}")
-    print(f"    x: {x_test.shape}, y: {y_test_sigmoid.shape} (one-hot labels)")
+    print(f"    x: {x_test.shape} uint8 [0-255], y: {y_test_softmax.shape} (integer labels)")
     print(f"\nSample PNGs: {OUTPUT_DIR}/custom_one_*.png (first 50)")
     print(f"{'='*60}")
     

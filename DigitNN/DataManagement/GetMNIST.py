@@ -9,34 +9,9 @@ Uses TensorFlow/Keras to load the original 28x28, then upscales with LANCZOS.
 import numpy as np
 from pathlib import Path
 from PIL import Image
-
-# Data directory for saving 64x64 versions
-HOME_PATH = Path.home()
-if "ubuntu" in str(HOME_PATH).lower():
-    DATA_DIR = Path.home() / "AIbyJC" / "DigitNN" / "data"
-else:
-    DATA_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data"
+from DataManagement.DataCommon import (upscale_images_to_size, DATA_DIR)
 
 MNIST_DIR = DATA_DIR / "MNIST"
-
-
-def upscale_images_to_size(images, target_size):
-    """
-    Upscale batch of images to target_size x target_size using LANCZOS.
-    
-    Args:
-        images: numpy array (N, H, W) uint8
-        target_size: Target size (28 or 64)
-    
-    Returns:
-        numpy array (N, target_size, target_size) uint8
-    """
-    upscaled = []
-    for img in images:
-        pil_img = Image.fromarray(img)
-        upscaled_img = pil_img.resize((target_size, target_size), Image.Resampling.LANCZOS)
-        upscaled.append(np.array(upscaled_img))
-    return np.array(upscaled, dtype=np.uint8)
 
 
 def load_mnist_dataset():
@@ -58,14 +33,6 @@ def load_mnist_dataset():
         return None, None, None, None
 
 
-def create_one_hot_labels(labels, num_classes=10):
-    """Create one-hot encoded labels for sigmoid output."""
-    one_hot = np.zeros((len(labels), num_classes), dtype=np.float32)
-    for i, label in enumerate(labels):
-        one_hot[i, label] = 1.0
-    return one_hot
-
-
 def load_mnist_size(target_size=28, force_regenerate=False):
     """
     Load MNIST dataset at target_size x target_size.
@@ -75,7 +42,7 @@ def load_mnist_size(target_size=28, force_regenerate=False):
     
     If data already matches target_size, no processing is performed.
     
-    Saves train/test files with both softmax and sigmoid labels (images stored once).
+    Saves train/test files with both softmax labels (images stored once).
     
     Args:
         target_size: Target size (28 or 64, default: 28)
@@ -86,8 +53,6 @@ def load_mnist_size(target_size=28, force_regenerate=False):
         - x arrays: uint8, shape (N, target_size, target_size)
         - y arrays: int, shape (N,) with values 0-9 (softmax format)
     """
-    MNIST_DIR.mkdir(parents=True, exist_ok=True)
-    
     # Cached file paths (train/test, images stored once with both label formats)
     train_file = MNIST_DIR / f"mnist_train_{target_size}x{target_size}.npz"
     test_file = MNIST_DIR / f"mnist_test_{target_size}x{target_size}.npz"
@@ -106,6 +71,8 @@ def load_mnist_size(target_size=28, force_regenerate=False):
             return x_train, y_train, x_test, y_test
         except Exception as e:
             print(f"  Error loading cache: {e}, regenerating...")
+    
+    MNIST_DIR.mkdir(parents=True, exist_ok=True)
     
     # Load original 28x28
     print(f"\nLoading MNIST dataset...")
@@ -128,25 +95,16 @@ def load_mnist_size(target_size=28, force_regenerate=False):
         print(f"  Processing test set from {current_size}x{current_size} to {target_size}x{target_size}...")
         x_test_scaled = upscale_images_to_size(x_test, target_size)
     
-    # Create one-hot labels for sigmoid
-    y_train_sigmoid = create_one_hot_labels(y_train)
-    y_test_sigmoid = create_one_hot_labels(y_test)
-    
     # Save files (images once, both label formats)
     print(f"  Saving to {MNIST_DIR}...")
-    np.savez(train_file, x=x_train_scaled, y_softmax=y_train, y_sigmoid=y_train_sigmoid)
-    np.savez(test_file, x=x_test_scaled, y_softmax=y_test, y_sigmoid=y_test_sigmoid)
+    np.savez(train_file, x=x_train_scaled, y_softmax=y_train)
+    np.savez(test_file, x=x_test_scaled, y_softmax=y_test)
     
     print(f"  Saved:")
-    print(f"    {train_file.name} - x: {x_train_scaled.shape}, y_softmax: {y_train.shape}, y_sigmoid: {y_train_sigmoid.shape}")
-    print(f"    {test_file.name} - x: {x_test_scaled.shape}, y_softmax: {y_test.shape}, y_sigmoid: {y_test_sigmoid.shape}")
+    print(f"    {train_file.name} - x: {x_train_scaled.shape}, y_softmax: {y_train.shape}")
+    print(f"    {test_file.name} - x: {x_test_scaled.shape}, y_softmax: {y_test.shape}")
     
     return x_train_scaled, y_train, x_test_scaled, y_test
-
-# Backward compatibility alias
-def load_mnist_64x64(force_regenerate=False):
-    """Backward compatibility wrapper for load_mnist_size(target_size=64)."""
-    return load_mnist_size(target_size=64, force_regenerate=force_regenerate)
 
 
 if __name__ == "__main__":

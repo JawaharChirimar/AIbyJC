@@ -41,6 +41,42 @@ from pathlib import Path
 
 
 # =============================================================================
+# Custom Layer for logit extraction (serialization-safe, no Lambda issues)
+# =============================================================================
+
+@keras.utils.register_keras_serializable(package="OODDetection")
+class LogitLayer(keras.layers.Layer):
+    """Custom layer that computes logits = W*x + b (no activation)."""
+    
+    def __init__(self, units, **kwargs):
+        super().__init__(**kwargs)
+        self.units = units
+    
+    def build(self, input_shape):
+        self.w = self.add_weight(
+            shape=(input_shape[-1], self.units),
+            initializer="zeros",
+            trainable=False,
+            name="kernel"
+        )
+        self.b = self.add_weight(
+            shape=(self.units,),
+            initializer="zeros",
+            trainable=False,
+            name="bias"
+        )
+        super().build(input_shape)
+    
+    def call(self, inputs):
+        return tf.matmul(inputs, self.w) + self.b
+    
+    def get_config(self):
+        config = super().get_config()
+        config.update({"units": self.units})
+        return config
+
+
+# =============================================================================
 # HELPER: Build sub-models that extract intermediate outputs
 # =============================================================================
 
@@ -58,6 +94,8 @@ def _is_softmax_model(model):
         return activation_name == 'softmax'
     return False  # Assume logits if no activation info
 
+def _is_logit_model(model):
+    return not _is_softmax_model(model)
 
 def _build_logit_model(model):
     """
@@ -121,17 +159,33 @@ def _build_logit_model(model):
         intermediate_output = intermediate_model.output
         intermediate_input = model.input
     
-    # Use Lambda layer to compute logits = W*x + b (no softmax)
-    logits = keras.layers.Lambda(
-        lambda x: tf.matmul(x, weights) + biases,
-        name='logits'
-    )(intermediate_output)
+    # Use custom LogitLayer instead of Lambda (serialization-safe)
+    num_classes = final_dense.units
+    logit_layer = LogitLayer(units=num_classes, name='logits')
+    logits = logit_layer(intermediate_output)
     
     # Create the logit model
     logit_model = keras.Model(inputs=intermediate_input, outputs=logits)
     
+    # Set the weights from the original final Dense layer
+    logit_layer.set_weights([weights.numpy(), biases.numpy()])
+    
     return logit_model
 
+def _build_energy_model_from_path(model,classifier_model_path):
+    _energy_scorer = EnergyScorer(model)
+    calibration_file = _energy_scorer.calibration_file_name_from_model_path(classifier_model_path)
+    if os.path.exists(calibration_file):
+        print("Loading energy scorer calibration for model...")
+        try:
+            _energy_scorer.load_calibration(calibration_file, percentile=99.9)
+            _calibration_data_loaded = True
+        except Exception as e:
+            print(f"Warning: Could not load calibration: {e}")
+    else:
+        print("OODDetection: No calibration file found - calibration will need to be done separately")
+    
+    return _energy_scorer
 
 def _build_feature_model(model):
     """
@@ -194,13 +248,13 @@ class EnergyScorer:
         self.batch_size = batch_size
         self._threshold = None  # Set via calibrate() or manually
         
-        # Detect model type and build logit model if needed
-        self._is_softmax = _is_softmax_model(model)
-        if self._is_softmax:
-            print("  Model has softmax activation, building logit extractor...")
-            self._logit_model = _build_logit_model(model)
+        # Detect model type
+        #self._is_softmax = _is_softmax_model(model)
+        if _is_softmax_model(model):
+            print("  EnergyScorer does not support softmax models. Use LogitModel instead.")
+            #self._logit_model = _build_logit_model(model)
+            raise ValueError(f"EnergyScorer does not support softmax models. Use LogitModel instead.")
         else:
-            print("  Model outputs logits directly, no conversion needed.")
             self._logit_model = model
     
     def _get_logits(self, images):
@@ -324,38 +378,37 @@ class EnergyScorer:
         energy_file_path = model_path.parent / f"energy_{base_name}_calibrate.json"
         return str(energy_file_path)
     
-    def load_calibration(self, model_path, percentile=99.9):
+    def load_calibration(self, calibration_file, percentile=99.9):
         """Load energy scorer calibration for model at model_path.
         threshold in the calibration file is a dictionary of percentiles and thresholds.
         Read from it the threshold for given percentile 
         and set it as the threshold for the energy scorer.
         If input percentile is not in the calibration file, use default value of 99.9."""
 
-        file_path = self.calibration_file_name_from_model_path(model_path)
-        print(f"Loading energy scorer calibration from: {file_path}")
+        print(f"Loading energy scorer calibration from: {calibration_file}")
 
         try:
-            with open(file_path, 'r') as f:
+            with open(calibration_file, 'r') as f:
                 calibration = json.load(f)
             
             thresholds = calibration.get('thresholds', {})
             
             # If 99.9 is missing, raise exception (should never happen)
             if '99.9' not in thresholds:
-                raise ValueError(f"load_calibration: Percentile 99.9 not found in calibration file {file_path}. This should never happen.")
+                raise ValueError(f"load_calibration: Percentile 99.9 not found in calibration file {calibration_file}. This should never happen.")
             
             # Check if requested percentile exists, fall back to 99.9 if not
             percentile_str = str(percentile)
             if percentile_str not in thresholds:
-                print(f"  Percentile {percentile} not found in calibration, using 99 instead")
+                print(f"  Percentile {percentile} not found in calibration, using 99.9 instead")
                 percentile_str = '99.9'
             
             self._threshold = thresholds[percentile_str]
-            print(f"Energy scorer calibration loaded from: {file_path}")
+            print(f"Energy scorer calibration loaded from: {calibration_file}")
             print(f"  Threshold: {self._threshold}")
             return self._threshold
         except Exception as e:
-            raise ValueError(f"load_calibration: Failed to load calibration from {file_path}: {e}")
+            raise ValueError(f"load_calibration: Failed to load calibration from {calibration_file}: {e}")
     
     def _prepare_input(self, image):
         """Reshape single image to (1, H, W, 1) batch."""
@@ -711,7 +764,7 @@ if __name__ == "__main__":
     parser.add_argument("--maha-params", type=str, default=None, help="Path to saved Mahalanobis .npz")
     parser.add_argument("--size", type=int, default=28, help="Input image size (28 or 64)")
     args = parser.parse_args()
-    
+        
     # Load model - determine which module to use based on model path
     model_path_str = str(args.model)
     if 'run_MNIST' in model_path_str:

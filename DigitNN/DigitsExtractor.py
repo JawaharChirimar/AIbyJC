@@ -464,6 +464,7 @@ image_array=None, return_results=False):
     
     # Load digit classifier if classification is requested (required for return_results)
     classifier_model = None
+    energy_scorer = None
     classifier_module = None
     if classify_digits or return_results:
         if classifier_model_path is None:
@@ -475,7 +476,7 @@ image_array=None, return_results=False):
             try:
                 # Get the appropriate classifier module based on model path
                 classifier_module = get_classifier_module(classifier_model_path)
-                classifier_model = classifier_module.load_digit_classifier(classifier_model_path)
+                classifier_model, energy_scorer = classifier_module.load_digit_classifier_and_energy_scorer(classifier_model_path)
             except Exception as e:
                 if return_results:
                     return {'error': f'Could not load classifier model: {str(e)}'}
@@ -497,10 +498,11 @@ image_array=None, return_results=False):
         predicted_digit = None
         confidence = None
         energy_score = None
-        if (classify_digits or return_results) and classifier_model and classifier_module:
+        if (classify_digits or return_results) and classifier_model and energy_scorer and classifier_module:
             try:
                 predicted_digit, confidence, energy_score = classifier_module.classify_digit(
                     classifier_model, 
+                    energy_scorer,
                     processed_region, 
                     input_size=64)
             except Exception as e:
@@ -528,7 +530,7 @@ image_array=None, return_results=False):
         else:
             # Save to file (existing behavior)
             # Create filename: file_L_D.jpg (or file_L_D_classified_X.jpg if classifying)
-            # Handle both None (from sigmoid models) and -1 (from softmax 11-class model) as rejected
+            # Handle both None and -1 (from softmax 11-class model) as rejected
             if predicted_digit is not None and predicted_digit != -1:
                 filename = f"file_{line_num}_{digit_num}_classified_{predicted_digit}_conf_{confidence:.2f}.jpg"
             else:

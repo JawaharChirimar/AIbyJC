@@ -16,11 +16,11 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-from OODDetection import EnergyScorer
-
-_energy_scorer = None
-_calibration_data_loaded = False
-
+from DigitClassifierHelper import (BalancedLoss, load_digit_classifier, 
+    create_logit_model, calibrate_energy_scorer_helper,
+    load_energy_caliberation_helper, classify_digit)
+from OODDetection import (EnergyScorer, _build_logit_model, 
+    _is_softmax_model, _is_logit_model, LogitLayer)
 
 # Import DATA_DIR from NonDigitGenerator (used for data paths)
 from DataManagement.NonDigitGenerator import DATA_DIR
@@ -34,96 +34,6 @@ from StratifiedBatchGenerator import create_stratified_batch_generator
 # =============================================================================
 DROPOUT_RATE = 0.5          # Dropout rate in model (prevents overfitting)
 BATCH_SIZE = 128             # Batch size for training
-
-class BalancedLoss(keras.losses.Loss):
-    """
-    Custom loss function that minimizes mean class loss + variance penalty.
-    
-    This encourages balanced performance across all classes by:
-    1. Computing per-class mean losses
-    2. Penalizing variance in class losses (higher variance = more imbalance)
-    
-    Formula: Loss = Mean(Class_Losses) + λ * Variance(Class_Losses)
-    
-    Where:
-    - Mean(Class_Losses) = average cross-entropy loss across all classes
-    - Variance(Class_Losses) = mean squared difference from the mean
-    - λ = var_penalty parameter (controls strength of variance penalty)
-    """
-    def __init__(self, num_classes=11, var_penalty=0.5, 
-    digit_only_variance=True,
-    name='balanced_loss', reduction='sum_over_batch_size'):
-        super().__init__(name=name, reduction=reduction)
-        self.num_classes = num_classes
-        self.var_penalty = var_penalty
-        self.digit_only_variance = digit_only_variance
-        self.ce = keras.losses.SparseCategoricalCrossentropy(
-            from_logits=True,
-            reduction='none'
-        )
-    
-    def call(self, y_true, y_pred):
-        # Per-sample cross-entropy losses
-        sample_losses = self.ce(y_true, y_pred)
-        
-        # Per-class mean loss
-        class_losses = []
-        class_counts = []
-        for i in range(self.num_classes):
-            mask = tf.cast(y_true == i, tf.float32)
-            count = tf.reduce_sum(mask)
-            class_counts.append(count)
-            # Compute loss: sum(sample_losses * mask) / count
-            # If count == 0, this will be 0/0 = NaN, which we'll filter out
-            class_loss = tf.reduce_sum(sample_losses * mask) / (count + 1e-10)  # Small epsilon to avoid NaN
-            class_losses.append(class_loss)
-        
-        class_losses = tf.stack(class_losses)
-        class_counts = tf.stack(class_counts)
-        
-        # Filter to only include classes present in batch (count > 0)
-        # NOTE: When use_stratified=True, both training and validation batches have all classes.
-        # When use_stratified=False, batches can have missing classes (defensive handling).
-        class_present = class_counts > 0
-        valid_class_losses = tf.boolean_mask(class_losses, class_present)
-        
-        # If no classes present (shouldn't happen), return zero loss
-        mean_loss = tf.cond(
-            tf.size(valid_class_losses) > 0,
-            lambda: tf.reduce_mean(valid_class_losses),
-            lambda: tf.constant(0.0, dtype=tf.float32)
-        )
-        
-        if self.digit_only_variance and self.num_classes == 11:
-            digit_losses = class_losses[:10]
-            digit_counts = class_counts[:10]
-            digit_present = digit_counts > 0
-            valid_digit_losses = tf.boolean_mask(digit_losses, digit_present)
-            variance = tf.cond(
-                tf.size(valid_digit_losses) > 0,
-                lambda: tf.reduce_mean(tf.square(valid_digit_losses - tf.reduce_mean(valid_digit_losses))),
-                lambda: tf.constant(0.0, dtype=tf.float32))
-        else:
-            variance = tf.cond(
-                tf.size(valid_class_losses) > 0,
-                lambda: tf.reduce_mean(tf.square(valid_class_losses - mean_loss)),
-                lambda: tf.constant(0.0, dtype=tf.float32))
-        
-        # Formula: Loss = Mean(Class_Losses) + λ * Variance(Class_Losses)
-        penalty = self.var_penalty * variance
-        
-        return mean_loss + penalty
-    
-    def get_config(self):
-        """Required for saving/loading models with custom loss."""
-        config = super().get_config()
-        config.update({
-            'num_classes': self.num_classes,
-            'var_penalty': self.var_penalty,
-            'digit_only_variance': self.digit_only_variance,
-            'reduction': self.reduction
-        })
-        return config
 
 def create_digit_classifier_model(input_size=28, use_balanced_loss=False,
 lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=64):
@@ -261,92 +171,64 @@ class Softmax11DiagnosticsCallback(keras.callbacks.Callback):
         print(f"  [Softmax11] {' | '.join(results)}")
         print(f"  [Per-digit] {' | '.join(per_digit_results)}")
 
-def calibrate_energy_scorer(classifier_model_path, input_size=28):
+
+def calibrate_energy_scorer(classifier_model_path, model=None, input_size=28):
     """
     Load a pre-trained digit classifier and calibrate the energy scorer.
     """
+
+    calibrate_energy_scorer_helper(classifier_model_path, 
+    load_augmented_data, 
+    BATCH_SIZE, 
+    model=model, 
+    input_size=input_size)
+
+
+def load_digit_classifier_and_energy_scorer(classifier_model_path, input_size=64):
+    """
+    Load a pre-trained digit classifier and energy scorer.
+    
+    Args:
+        classifier_model_path: Path to the model file
+        input_size: Image size for calibration if needed (default: 64)
+    """
     model = load_digit_classifier(classifier_model_path)
-    if model is None:
-        raise ValueError(f"calibrate_energy_scorer: Could not load model from {classifier_model_path}")
+    if _is_softmax_model(model):
+        raise ValueError(f"load_digit_classifier_and_energy_scorer: Model is softmax, not supported. Use LogitModel instead.")
+
+    energy_scorer = EnergyScorer(model)    
     
-    print("Loading test data for energy scorer calibration...")
-    _, _, x_test, y_test = load_augmented_data(image_size=input_size)
-        
-    if x_test is None:
-        raise ValueError(f"calibrate_energy_scorer: Failed to load test data")
+    calibration_file = energy_scorer.calibration_file_name_from_model_path(classifier_model_path)
+    retVal = load_energy_caliberation_helper(calibration_file, energy_scorer)
+    if retVal == -1:
+        print("No energy scorer calibration file found - doing calibration now...")
+        calibrate_energy_scorer(classifier_model_path, model=model, input_size=input_size)
+        retVal = load_energy_caliberation_helper(calibration_file, energy_scorer)
+        if retVal == -1:
+            raise ValueError(f"load_digit_classifier_and_energy_scorer: Could not load energy scorer calibration after creating it")  
+
+    return model, energy_scorer
+
+
+def _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
+learning_rate, neurons_in_dense_layer):
+    print(f"Creating new digit classifier model for 11 classes (digits 0-9, and 10 'not a digit')...")
+    print(f"  Input ({input_size}x{input_size} input, loss: {loss_type})...")
+    if use_balanced_loss:
+        print(f"  Loss: BalancedLoss with lambda weight: {lambda_weight}")
     else:
-        # Filter to only digits (0-9), exclude non-digits (class 10)
-        digit_mask = y_test < 10
-        x_test_digits = x_test[digit_mask]
-            
-    _energy_scorer = EnergyScorer(model)
-    thresholds = _energy_scorer.calibrate(
-        x_digits=x_test_digits, 
-        percentile=[99.9, 99.5,99, 95, 90])
+        print(f"  Loss: cross-entropy")
+    print(f"  Learning rate: {learning_rate}")
+    print(f"  Dense layer neurons: {neurons_in_dense_layer}")
     
-    # Create dictionary mapping percentiles to thresholds
-    percentiles = [99.9, 99.5, 99, 95, 90]
-    thresholds_dict = {str(p): float(t) for p, t in zip(percentiles, thresholds)}
-    
-    # Create calibration data with thresholds and timestamp
-    calibration_data = {
-        'thresholds': thresholds_dict,
-        'time': datetime.now().isoformat()
-    }
-    
-    # Derive energy calibration file path from model path
-    # e.g., /path/to/xy.keras -> /path/to/energy_xy_calibrate.json
-    energy_file_path = EnergyScorer.calibration_file_name_from_model_path(classifier_model_path)
-    
-    # Write to JSON file (overwrite if exists)
-    try:
-        with open(energy_file_path, 'w') as f:
-            json.dump(calibration_data, f, indent=2)
-        print(f"Energy calibration saved to {energy_file_path}")
-        return True
-    except Exception as e:
-        raise ValueError(f"calibrate_energy_scorer: Failed to save calibration to {energy_file_path}: {e}")
+    model = create_digit_classifier_model(
+    input_size=input_size, 
+    use_balanced_loss=use_balanced_loss, 
+    lambda_weight=lambda_weight, 
+    learning_rate=learning_rate, 
+    neurons_in_dense_layer=neurons_in_dense_layer)
 
-def load_digit_classifier(classifier_model_path):
-    """
-    Load a pre-trained digit classifier.
-    """
-    if classifier_model_path is None or classifier_model_path == '' or not classifier_model_path:
-        raise ValueError("load_digit_classifier:classifier_model_path must be provided when train_model=False")
-    
-    classifier_model_path = str(classifier_model_path)  # Convert Path to string if needed
-    if not os.path.exists(classifier_model_path):
-        raise ValueError(f"load_digit_classifier:Model file not found: {classifier_model_path}.")
-    
-    try:
-        print(f"Loading digit classifier from: {classifier_model_path}")
-        # Provide custom objects in case model was saved with BalancedLoss
-        model = keras.models.load_model(
-            classifier_model_path,
-            custom_objects={'BalancedLoss': BalancedLoss}
-        )
-        print("Digit classifier loaded successfully")
-
-        # Try to load calibration if it exists (optional)
-        global _energy_scorer, _calibration_data_loaded
-        if _energy_scorer is None:
-            _energy_scorer = EnergyScorer(model)
-            calibration_file = _energy_scorer.calibration_file_name_from_model_path(classifier_model_path)
-            if os.path.exists(calibration_file):
-                print("Loading energy scorer calibration for model...")
-                try:
-                    _energy_scorer.load_calibration(classifier_model_path, percentile=99.9)
-                    _calibration_data_loaded = True
-                except Exception as e:
-                    print(f"Warning: Could not load calibration: {e}")
-            else:
-                print("No calibration file found - calibration will need to be done separately")
-
-        return model  
-    except Exception as e:
-        raise ValueError(f"load_digit_classifier:Cannot load model from {classifier_model_path}: {e}. Set train_model=True to create a new model.")
-
-    return None
+    return model
 
 
 def train_digit_classifier(
@@ -384,61 +266,51 @@ def train_digit_classifier(
     run_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"Model checkpoints will be saved to: {run_dir}")
-    
-    # Load initial model if provided, otherwise create new model
-    if initial_model_path is not None and os.path.exists(initial_model_path):
-        print(f"Loading initial model from: {initial_model_path}")
-        print(f"  Will continue training from this checkpoint...")
-        try:
-            # Provide custom objects in case model was saved with BalancedLoss
-            model = keras.models.load_model(
-                initial_model_path,
-                custom_objects={'BalancedLoss': BalancedLoss}
-            )
-            print(f"  Initial model loaded successfully")
-            # Recompile with new learning rate and loss function settings
-            if use_balanced_loss:
-                loss_function = BalancedLoss(num_classes=11, 
-                var_penalty=lambda_weight,
-                digit_only_variance=True)
-            else:
-                loss_function = 'sparse_categorical_crossentropy'
-                
-            model.compile(
-                optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-                loss=loss_function,
-                metrics=['accuracy']
-            )
+    if initial_model_path is not None:
+        if os.path.exists(initial_model_path):
+            try:
+                print(f"Loading initial model from: {initial_model_path}")
+                print(f"  Will continue training from this checkpoint...")
 
-            print(f"  Model recompiled with learning rate: {learning_rate}")
-            if use_balanced_loss:
-                print(f"  Model using balanced loss with lambda weight: {lambda_weight}")
-                print(f"  Model using balanced loss digit only variance")
+                # Provide custom objects in case model was saved with BalancedLoss
+                model = keras.models.load_model(
+                    initial_model_path,
+                    custom_objects={'BalancedLoss': BalancedLoss}
+                )
+                print(f"  Initial model loaded successfully")
+                # Recompile with new learning rate and loss function settings
+                if use_balanced_loss:
+                    loss_function = BalancedLoss(num_classes=10, 
+                    var_penalty=lambda_weight,
+                    digit_only_variance=True)
+                else:
+                    loss_function = 'sparse_categorical_crossentropy'
+                    
+                model.compile(
+                    optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+                    loss=loss_function,
+                    metrics=['accuracy']
+                )
 
-        except Exception as e:
-            print(f"  Warning: Could not load initial model: {e}")
-            print(f"  Creating new model instead...")
-            model = create_digit_classifier_model(
-                input_size=input_size,
-                use_balanced_loss=use_balanced_loss,
-                lambda_weight=lambda_weight,
-                learning_rate=learning_rate,
-                neurons_in_dense_layer=neurons_in_dense_layer
-            )
-    else:
-        # Create new model (always uses softmax with 11 classes)
-        if initial_model_path is not None:
-            print(f"Warning: Initial model path provided but file not found: {initial_model_path}")
-            print(f"  Creating new model instead...")
+                print(f"  Model recompiled with learning rate: {learning_rate}")
+                if use_balanced_loss:
+                    print(f"  Model using balanced loss with lambda weight: {lambda_weight}")
+                    print(f"  and digit only variance")
+
+            except Exception as e:
+                print(f"  Warning: Could not load initial model: {e}")
+                print(f"  Creating new model instead...")
+                model = _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
+                learning_rate, neurons_in_dense_layer)
         else:
-            print(f"Creating new digit classifier model ({input_size}x{input_size} input, 11 classes)...")
-        model = create_digit_classifier_model(
-            input_size=input_size,
-            use_balanced_loss=use_balanced_loss,
-            lambda_weight=lambda_weight,
-            learning_rate=learning_rate,
-            neurons_in_dense_layer=neurons_in_dense_layer
-        )
+            print(f"Initial model path provided but file not found: {initial_model_path}")
+            print(f"  Creating new model instead...")
+            model = _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
+            learning_rate, neurons_in_dense_layer)
+    else:
+        model = _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
+        learning_rate, neurons_in_dense_layer)    
+    
     
     # Try to train on all digit datasets
     try:
@@ -450,7 +322,9 @@ def train_digit_classifier(
         if x_train_all is None:
             raise ValueError(f"Failed to load augmented data. Run augmentation scripts for size {input_size}")
         
-        print("\n✓ Using PRE-GENERATED augmented data (fast training mode)")
+        print("\n" + "="*60)
+        print("FAST TRAINING MODE (pre-generated augmented data)")
+        print("="*60)
         
         # Shuffle test data
         indices = np.random.permutation(len(x_test))
@@ -464,7 +338,6 @@ def train_digit_classifier(
         # =====================================================================
         # TRAINING SETUP
         # =====================================================================
-
         
         batch_size = BATCH_SIZE
         print(f"Epoch models will be saved as: {run_dir}/digit_classifier_epoch_XX.keras")
@@ -476,13 +349,9 @@ def train_digit_classifier(
         # =================================================================
         # FAST MODE: from_generator() with model.fit()
         # =================================================================
-        print("\n" + "="*60)
-        print("FAST TRAINING MODE (pre-generated augmented data)")
-        print("="*60)
         
         steps_per_epoch = len(x_train_all) // batch_size
         val_steps = (len(x_test) + batch_size - 1) // batch_size
-        print(f"Training samples: {len(x_train_all):,}")
         print(f"Batch size: {batch_size}")
         print(f"Steps per epoch: {steps_per_epoch}")
         
@@ -609,82 +478,6 @@ def train_digit_classifier(
         print("Using untrained model (predictions will be random)")
         return model
 
-def is_logit_model(model):
-    """Check if model outputs logits (no softmax) or probabilities (softmax)."""
-    last_layer = model.layers[-1]
-    if hasattr(last_layer, 'activation'):
-        activation_name = last_layer.activation.__name__
-        return activation_name != 'softmax'  # True if logits, False if softmax
-    return True  # Assume logits if no activation info
-
-def classify_digit(classifier_model, digit_image, input_size=28):
-    """
-    Classify a single digit image using the CNN model with 11 classes.
-    
-    Args:
-        classifier_model: Trained Keras model (11 classes: 0-9 digits + 10 "not a digit")
-        digit_image: Greyscale image (numpy array), will be resized to 
-            input_size x input_size if needed
-        input_size: Image size (28 or 64, default: 28)
-    
-    Returns:
-        Tuple of (predicted_digit, confidence)
-        - predicted_digit: int (0-9 for digits, 10 for "not a digit")
-        - confidence: float (0.0-1.0) - probability of the predicted class
-    """
-    # Ensure image is the right shape and type
-    if digit_image.shape != (input_size, input_size):
-        # Resize using LANCZOS for quality
-        digit_image = cv2.resize(
-            digit_image, 
-            (input_size, input_size), 
-            interpolation=cv2.INTER_LANCZOS4
-        )
-    
-    # Normalize pixel values to [0, 1]
-    digit_normalized = digit_image.astype('float32') / 255.0
-    
-    # The input image should already be in MNIST format: white digits on black background
-    # (ensured by BoundingBoxFromYolo.py preprocessing)
-    
-    # Reshape for model input: (1, input_size, input_size, 1)
-    digit_input = digit_normalized.reshape(1, input_size, input_size, 1)
-    
-    # Predict
-    if is_logit_model(classifier_model):
-        logits = classifier_model.predict(digit_input, verbose=0)
-        predictions = tf.nn.softmax(logits).numpy()
-    else:
-        predictions = classifier_model.predict(digit_input, verbose=0)
-
-    # Get predicted class (0-10)
-    predicted_class = int(np.argmax(predictions[0]))
-    confidence = float(predictions[0][predicted_class])
-    print(f"Predicted class: {predicted_class}, Confidence: {confidence}")
-
-    global _energy_scorer, _calibration_data_loaded
-    
-    # Calibrate is loaded when classifer model is loaded
-    if _calibration_data_loaded:
-        score = _energy_scorer.score(digit_input)
-        print(f"Energy score: {score}")
-        # Use energy score to detect OOD: if energy > threshold, reject as non-digit
-        is_ood = _energy_scorer.is_ood(digit_input)
-        if is_ood and predicted_class != 10:
-            # Energy indicates OOD - override prediction to non-digit (class 10)
-            # even if classifier predicted a digit
-            predicted_class = 11
-            confidence = float(predictions[0][10])  # Use classifier's confidence for class 10
-            print(f"  Energy-based OOD detection: Overriding to class 11 (non-digit)")
-        else:
-            print(f"  Energy-based OOD detection: Predicted class {predicted_class} is not OOD")
-    else:
-        score = None
-        print(f"  Energy scorer not calibrated, returning None for score")
-    
-    # Return the predicted class (0-9 for digits, 10 for non-digit)
-    return predicted_class, confidence, score
-
 
 def main():
     """
@@ -695,20 +488,25 @@ def main():
         description="Train a digit classifier on MNIST dataset"
     )
     parser.add_argument(
-        "-m", "--model-path",
+        "--model-path",
         type=str,
         default=None,
-        help="Path to save the trained model (.keras file). Default: ~/.digit_classifier_mnist.keras"
+        help="Path to trained model (required for --energy-calibrate and --create-logit-model)"
     )
     parser.add_argument(
         "--energy-calibrate",
         action="store_true",
-        help="True means calibrate energy model using the specified model"
+        help="Calibrate energy model using the specified model"
+    )
+    parser.add_argument(
+        "--create-logit-model",
+        action="store_true",
+        help="Create logit model from the specified model"
     )
     parser.add_argument(
         "--train-model",
         action="store_true",
-        help="True means train model, False means load model"
+        help="True means train model"
     )
     parser.add_argument(
         "--epoch-count",
@@ -757,9 +555,19 @@ def main():
     
     # Determine input size
     input_size = args.size
-        
-    if args.train_model and args.energy_calibrate:
-        print(f"Please specify only option. Either --train-model or --energy-calibrate, not both.")
+    
+    # Check that exactly one option is selected
+    options_selected = sum([args.train_model, args.energy_calibrate, args.create_logit_model])
+    
+    if options_selected > 1:
+        print("Please specify only ONE option: --train-model, --energy-calibrate, or --create-logit-model")
+        return 0
+    
+    if options_selected == 0:
+        print("Please specify one of the following options:")
+        print("  --train-model to train a new model")
+        print("  --energy-calibrate to calibrate energy scorer for existing model")
+        print("  --create-logit-model to create a logit model from an existing model")
         return 0
 
     if args.energy_calibrate:
@@ -768,6 +576,12 @@ def main():
         print(f"Input image size: {input_size}x{input_size}")
         calibrate_energy_scorer(args.model_path, input_size=input_size)
         return 1
+
+    if args.create_logit_model:
+        print(f"Starting to create logit model from classifier model...")
+        print(f"Trained classifier model path: {args.model_path}")
+        create_logit_model(args.model_path)
+        return 2
 
     if args.train_model:
         print(f"Starting digit classifier training with 11 classes (0-9 digits + 10 'not a digit')...")
@@ -790,14 +604,7 @@ def main():
             neurons_in_dense_layer=args.dense_layer
         )
         print("\nTraining complete!")
-        return 2
-
-    # Default case: no options specified
-    print(f"Please specify one of the following options:")
-    print(f"  --train-model to train a new model")
-    print(f"  --energy-calibrate to load an existing model")
-    return 3
-
+        return 3
 
 
 if __name__ == "__main__":

@@ -10,14 +10,7 @@ Supports both 28x28 (original) and 64x64 (upscaled with LANCZOS) versions.
 
 import numpy as np
 from pathlib import Path
-from PIL import Image
-
-# Data directory for saving 64x64 versions
-HOME_PATH = Path.home()
-if "ubuntu" in str(HOME_PATH).lower():
-    DATA_DIR = Path.home() / "AIbyJC" / "DigitNN" / "data"
-else:
-    DATA_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data"
+from DataManagement.DataCommon import (upscale_images_to_size, DATA_DIR)
 
 EMNIST_DIR = DATA_DIR / "EMNIST"
 
@@ -28,25 +21,6 @@ try:
 except ImportError:
     EMNIST_AVAILABLE = False
     print("Warning: 'emnist' package not available. Install with: pip install emnist")
-
-
-def upscale_images_to_size(images, target_size):
-    """
-    Upscale batch of images to target_size x target_size using LANCZOS.
-    
-    Args:
-        images: numpy array (N, H, W) uint8
-        target_size: Target size (28 or 64)
-    
-    Returns:
-        numpy array (N, target_size, target_size) uint8
-    """
-    upscaled = []
-    for img in images:
-        pil_img = Image.fromarray(img)
-        upscaled_img = pil_img.resize((target_size, target_size), Image.Resampling.LANCZOS)
-        upscaled.append(np.array(upscaled_img))
-    return np.array(upscaled, dtype=np.uint8)
 
 
 def load_emnist_dataset(split='digits'):
@@ -90,23 +64,6 @@ def load_emnist_dataset(split='digits'):
         return None, None, None, None
 
 
-# Alias for backwards compatibility
-def load_emnist_from_zip(zip_path=None, split='digits'):
-    """
-    Backwards compatibility wrapper. Now uses emnist package instead of direct zip loading.
-    The zip_path parameter is ignored.
-    """
-    return load_emnist_dataset(split=split)
-
-
-def create_one_hot_labels(labels, num_classes=10):
-    """Create one-hot encoded labels for sigmoid output."""
-    one_hot = np.zeros((len(labels), num_classes), dtype=np.float32)
-    for i, label in enumerate(labels):
-        one_hot[i, label] = 1.0
-    return one_hot
-
-
 def load_emnist_size(split='digits', target_size=28, force_regenerate=False):
     """
     Load EMNIST dataset at target_size x target_size.
@@ -116,7 +73,7 @@ def load_emnist_size(split='digits', target_size=28, force_regenerate=False):
     
     If data already matches target_size, no processing is performed.
     
-    Saves train/test files with both softmax and sigmoid labels (images stored once).
+    Saves train/test files with both softmax labels (images stored once).
     
     Args:
         split: Which split to load ('digits', 'letters', etc.)
@@ -128,8 +85,6 @@ def load_emnist_size(split='digits', target_size=28, force_regenerate=False):
         x arrays are (N, target_size, target_size) uint8
         y arrays are integer labels (softmax format)
     """
-    EMNIST_DIR.mkdir(parents=True, exist_ok=True)
-    
     # Cached file paths (train/test, images stored once with both label formats)
     train_file = EMNIST_DIR / f"emnist_{split}_train_{target_size}x{target_size}.npz"
     test_file = EMNIST_DIR / f"emnist_{split}_test_{target_size}x{target_size}.npz"
@@ -148,6 +103,8 @@ def load_emnist_size(split='digits', target_size=28, force_regenerate=False):
             return x_train, y_train, x_test, y_test
         except Exception as e:
             print(f"  Error loading cache: {e}, regenerating...")
+
+    EMNIST_DIR.mkdir(parents=True, exist_ok=True)
     
     # Load original 28x28 using emnist package
     print(f"\nLoading EMNIST dataset...")
@@ -170,26 +127,17 @@ def load_emnist_size(split='digits', target_size=28, force_regenerate=False):
         x_train_scaled = upscale_images_to_size(x_train, target_size)
         print(f"  Processing test set from {current_size}x{current_size} to {target_size}x{target_size} with LANCZOS...")
         x_test_scaled = upscale_images_to_size(x_test, target_size)
-    
-    # Create one-hot labels for sigmoid
-    y_train_sigmoid = create_one_hot_labels(y_train)
-    y_test_sigmoid = create_one_hot_labels(y_test)
-    
+        
     # Save files (images once, both label formats)
     print(f"Saving to {EMNIST_DIR}...")
-    np.savez(train_file, x=x_train_scaled, y_softmax=y_train, y_sigmoid=y_train_sigmoid)
-    np.savez(test_file, x=x_test_scaled, y_softmax=y_test, y_sigmoid=y_test_sigmoid)
+    np.savez(train_file, x=x_train_scaled, y_softmax=y_train)
+    np.savez(test_file, x=x_test_scaled, y_softmax=y_test)
     
     print(f"  Saved:")
-    print(f"    {train_file.name} - x: {x_train_scaled.shape}, y_softmax: {y_train.shape}, y_sigmoid: {y_train_sigmoid.shape}")
-    print(f"    {test_file.name} - x: {x_test_scaled.shape}, y_softmax: {y_test.shape}, y_sigmoid: {y_test_sigmoid.shape}")
+    print(f"    {train_file.name} - x: {x_train_scaled.shape}, y_softmax: {y_train.shape}")
+    print(f"    {test_file.name} - x: {x_test_scaled.shape}, y_softmax: {y_test.shape}")
     
     return x_train_scaled, y_train, x_test_scaled, y_test
-
-# Backward compatibility alias
-def load_emnist_64x64(split='digits', force_regenerate=False):
-    """Backward compatibility wrapper for load_emnist_size(target_size=64)."""
-    return load_emnist_size(split=split, target_size=64, force_regenerate=force_regenerate)
 
 
 def load_emnist_letters_size(target_size=28, force=False):
@@ -211,10 +159,6 @@ def load_emnist_letters_size(target_size=28, force=False):
         - x_train: (N, target_size, target_size) uint8
         - y_train: (N,) int32 (labels 10-61)
     """
-    if not EMNIST_AVAILABLE:
-        print("EMNIST package not available.")
-        return None, None
-    
     # Check if already generated
     letters_file = EMNIST_DIR / f"emnist_letters_train_{target_size}x{target_size}.npz"
     
@@ -227,7 +171,10 @@ def load_emnist_letters_size(target_size=28, force=False):
     EMNIST_DIR.mkdir(parents=True, exist_ok=True)
     
     print("Extracting EMNIST letters using emnist package (byclass for 52 separate classes)...")
-    x_train, y_train = extract_training_samples('byclass')
+    x_train, y_train, _, _ = load_emnist_dataset('byclass')
+
+    if x_train is None:
+        return None, None
     
     # Filter to get only letters: labels 10-61 (uppercase 10-35, lowercase 36-61)
     letter_mask = (y_train >= 10) & (y_train <= 61)
@@ -254,11 +201,6 @@ def load_emnist_letters_size(target_size=28, force=False):
     print(f"  Saved: x={x_train_scaled.shape}, y={y_train.shape}")
     
     return x_train_scaled, y_train
-
-# Backward compatibility alias
-def load_emnist_letters_64x64(force=False):
-    """Backward compatibility wrapper for load_emnist_letters_size(target_size=64)."""
-    return load_emnist_letters_size(target_size=64, force=force)
 
 
 if __name__ == "__main__":

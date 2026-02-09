@@ -20,14 +20,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Import common functions from base module
 from DataManagement.PregenAugmentedBase import (
     process_dataset_data,
-    DATA_DIR
+    DATA_DIR,
+    AUGMENT_RATIO
 )
 
 
 EMNIST_DIR = DATA_DIR / "EMNIST"
-
-# Augmentation ratio (10% of each class, matching PregenAugmentedData)
-AUGMENT_RATIO = 0.10
 
 
 def process_emnist_data(split='train', target_size=28, force=False):

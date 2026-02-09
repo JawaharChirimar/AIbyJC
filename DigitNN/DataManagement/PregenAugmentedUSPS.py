@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Import common functions from base module
 from DataManagement.PregenAugmentedBase import (
     process_dataset_data,
-    DATA_DIR
+    DATA_DIR,
+    AUGMENT_RATIO
 )
 
 USPS_DIR = DATA_DIR / "usps"
@@ -34,7 +35,7 @@ def process_usps_data(split='train', target_size=28, force=False):
         split=split,
         target_size=target_size,
         force=force,
-        output_suffix=""
+        augment_ratio=AUGMENT_RATIO
     )
 
 

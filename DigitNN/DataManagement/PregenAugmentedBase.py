@@ -35,6 +35,10 @@ if "ubuntu" in str(HOME_PATH).lower():
 else:
     DATA_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data"
 
+# Augmentation ratio (10% of each class selected for augmentation)
+AUGMENT_RATIO = 0.10
+
+
 def apply_post_processing(img_array):
     """
     Apply post-processing with independent probability checks (matching PregenAugmentedData.py).
@@ -55,7 +59,7 @@ def apply_post_processing(img_array):
     if random.random() < THIN_PROB:
         result = apply_thinning(result)
     else:
-        if random.random() < THICK_PROB*10.0/9.0:
+        if random.random() < THICK_PROB/(1.0-THIN_PROB):
             result = apply_thickening(result)
     
     if random.random() < ERASURE_PROB:
@@ -113,7 +117,7 @@ def augment_image(img_array, label):
     return results
 
 
-def calculate_balancing_parameters(Original):
+def calculate_balancing_parameters(Original, augment_ratio_for_max_class):
     """
     Calculate augmentation percentages and counts using balancing algorithm.
     
@@ -133,7 +137,7 @@ def calculate_balancing_parameters(Original):
 
     maxIndex = max(Original, key=Original.get)    
     # Step 1: Calculate Percent[maxIndex] and PreFinal[maxIndex]
-    Percent[maxIndex] = 0.01
+    Percent[maxIndex] = augment_ratio_for_max_class
     PreAugmented[maxIndex] = int(math.floor(Original[maxIndex] * Percent[maxIndex])) * 5
     PreFinal[maxIndex] = Original[maxIndex] + PreAugmented[maxIndex]
     m = PreFinal[maxIndex]  # Initialize minimum
@@ -183,7 +187,7 @@ def load_dataset_npz(filepath, target_size):
 
 
 def process_dataset_data(dataset_name, dataset_dir, split='train', target_size=28, force=False, 
-                        augment_ratio=0.10, output_suffix=""):
+                        augment_ratio=AUGMENT_RATIO, output_suffix=""):
     """
     Generic function to process dataset with augmentation.
     Automatically detects if classes are balanced and uses appropriate method:
@@ -253,7 +257,7 @@ def process_dataset_data(dataset_name, dataset_dir, split='train', target_size=2
     else:
         print(f"\n  ⚠ Classes are not balanced (min: {min(counts_list):,}, max: {max(counts_list):,})")
         print(f"\nCalculating balancing parameters (using balancing algorithm)...")
-        Percent, Augmented, m = calculate_balancing_parameters(Original)
+        Percent, Augmented, m = calculate_balancing_parameters(Original, 0.01)
         print(f"\nBalancing plan:")
         for i in range(10):
             print(f"  Class {i}: {Original[i]:,} original → {Augmented[i]:,} augmented → {Original[i] + Augmented[i]:,} final")
@@ -359,3 +363,51 @@ def process_dataset_data(dataset_name, dataset_dir, split='train', target_size=2
     print(f"  Saved {len(all_images):,} images")
     print(f"  File size: {file_size:.2f} MB")
     print(f"  ✓ Complete!")
+
+
+def load_dataset_data(dataset_name, dataset_dir, split='train', target_size=28, suffix=''):
+    """
+    Generic function to load un-augmented dataset.
+    
+    Args:
+        dataset_name: Name prefix for files (e.g., "emnist_digits" or "ardis")
+        dataset_dir: Path to dataset directory
+        split: 'train' or 'test'
+        target_size: Image size (28 or 64)
+        suffix: Optional suffix before .npz (e.g., "_softmax" for custom_one files)
+    """
+    print(f"\n{'='*70}")
+    print(f"Loading {dataset_name.upper()} {split.upper()} data ({target_size}x{target_size})")
+    print(f"{'='*70}")
+        
+    # Load original data
+    npz_file = dataset_dir / f"{dataset_name}_{split}_{target_size}x{target_size}{suffix}.npz"
+    
+    if not npz_file.exists():
+        raise FileNotFoundError(f"{dataset_name} {split} data not found at {npz_file}")
+    
+    print(f"Loading {split} data from {npz_file}...")
+    images, labels = load_dataset_npz(npz_file, target_size)
+    
+    if images is None or labels is None:
+        raise ValueError(f"Failed to load {dataset_name} {split} data")
+    
+    print(f"  Loaded {len(images):,} samples")
+    print(f"  Labels shape: {labels.shape if hasattr(labels, 'shape') else type(labels)}, len: {len(labels):,}")
+    
+    # Ensure labels is 1D numpy array
+    if isinstance(labels, np.ndarray):
+        if labels.ndim > 1:
+            labels = labels.flatten()
+    labels = np.array(labels).flatten()  # Ensure 1D
+    
+    # Count original distribution
+    original_counts = Counter(labels)
+    Original = {i: original_counts.get(i, 0) for i in range(10)}
+    print(f"\nOriginal class distribution:")
+    for i in range(10):
+        print(f"  Class {i}: {Original[i]:,}")
+    
+    return images, labels
+    
+    
