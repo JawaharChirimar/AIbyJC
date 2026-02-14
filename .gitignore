@@ -16,5 +16,6 @@ Analysis/
 
 DigitNN/data/
 DigitNN/test_scripts/
+*.bkup.py
 
 QuadraticFunction/
