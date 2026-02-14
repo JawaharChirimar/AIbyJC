@@ -173,7 +173,7 @@ def load_emnist_letters_size(target_size=28, force=False):
     print("Extracting EMNIST letters using emnist package (byclass for 52 separate classes)...")
     x_train, y_train, _, _ = load_emnist_dataset('byclass')
 
-    if x_train is None:
+    if x_train is None or y_train is None:
         return None, None
     
     # Filter to get only letters: labels 10-61 (uppercase 10-35, lowercase 36-61)
