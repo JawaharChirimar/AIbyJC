@@ -1,0 +1,15 @@
+# Project Rules (Hard Requirements)
+
+1. Read `STATE.md` before any analysis or coding.
+2. Do not repeat points the user has already accepted as intentional design choices.
+3. Only report:
+   - real runtime/syntax/logic defects, or
+   - user-requested review items.
+4. If user says a behavior is intentional, treat it as settled unless directly asked to revisit.
+5. Keep responses short and direct.
+6. No policy/opinion comments unless explicitly requested.
+7. Before claiming a bug, re-read the exact current code block.
+8. If unsure, ask one precise clarifying question instead of assuming.
+9. For code review requests, list findings first, sorted by severity.
+10. Never restate previously closed findings.
+11. Default scope is the full repository unless the user explicitly narrows scope.

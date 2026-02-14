@@ -19,3 +19,8 @@ DigitNN/test_scripts/
 *.bkup.py
 
 QuadraticFunction/
+
+# Keep Cursor project rules in git, ignore other local Cursor state
+.cursor/**
+!.cursor/rules/
+!.cursor/rules/*.mdc
