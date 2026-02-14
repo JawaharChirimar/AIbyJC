@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FontDigitGenerator.py
+PregenGoogleFonts.py
 
 Downloads fonts from Google Fonts API and generates augmented digit images (0-9)
 for use as training data.
@@ -13,11 +13,18 @@ Font Selection:
 
 Each font generates 1,090 images:
 - 10 digits × 109 variations each
-- 27 combinations (stroke × aspect) × 4 types (rotation, shear, erasure, breaks) + 1 original
-- 4 variation types: rotation, shear, 15% pixel erasure, 6 stroke breaks (4px)
+- 27 combinations (stroke × aspect) × 4 types (rotation + and -, shear + and -) + 1 original
+- 4 variation types: rotation + and -, shear + and -, 
+- and 1 original with no variation
+
+The digits are then post-processed with:
+- blur (20% probability)
+- pixel erasure (15% probability)
+- stroke breaks (15% probability)
+- noise (100% probability)
 
 Usage:
-    python FontDigitGenerator.py --output-dir ./data/font_digits
+    python PregenGoogleFonts.py --output-dir ./data/font_digits
     
 Output:
     - font_digits_train_augmented_{size}x{size}.npz: x (N, size, size, 1), y (N,) integer labels
@@ -38,11 +45,20 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from DataManagement.DataAugmentation import (
+    ROTATION_RANGE_POS, 
+    ROTATION_RANGE_NEG,
+    SHEAR_RANGE_POS, 
+    SHEAR_RANGE_NEG,
+    ERASURE_PERCENT,
+    STROKE_BREAK_SIZE,
+    STROKE_BREAK_COUNT,
+    BLUR_RADIUS_RANGE,
     apply_rotation as apply_rotation_np,
     apply_shear as apply_shear_np,
     apply_aspect_ratio as apply_aspect_ratio_np,
-    apply_random_pixel_erasure as apply_random_pixel_erasure_np,
-    apply_stroke_breaks as apply_stroke_breaks_np,
+    apply_random_pixel_erasure,
+    apply_stroke_breaks,
+    apply_blur,
     apply_thinning as apply_thinning_np,
     apply_thickening as apply_thickening_np
 )
@@ -82,32 +98,19 @@ PREFERRED_WEIGHTS = ["regular", "400", "500", "700", "600", "800", "900", "300",
 EXCLUDE_VARIANTS = ["italic", "100italic", "200italic", "300italic", "400italic", 
                     "500italic", "600italic", "700italic", "800italic", "900italic"]
 
-# Output format:
-# - Size: 64x64 pixels
-# - Channels: 1 (grayscale)
-# - Background: Black (0)
-# - Digit: White (normalized to 0-1 range)
-# - Dtype: float32
-# - Shape: (N, 64, 64, 1)
-
+# Post-processing parameters
+BLUR_PROB = 0.20
+ERASURE_PROB = 0.15
+BREAKS_PROB = 0.15
+NOISE_STD = 0.05       # Gaussian noise std dev
+NOISE_PROB = 1.0       # Probability of applying noise (1.0 = 100%)
+    
 # Augmentation parameters
-ROTATION_RANGE_NEG = (-30, -3)   # degrees (negative rotation range)
-ROTATION_RANGE_POS = (3, 30)      # degrees (positive rotation range)
-SHEAR_RANGE_NEG = (-16, -2)      # degrees vertical shear (negative range)
-SHEAR_RANGE_POS = (2, 16)         # degrees vertical shear (positive range)
-NOISE_STD = 0.05                 # Gaussian noise std dev
 STROKE_VARIATIONS = [-1, 0, 1]   # -1 = thinner (erode), 0 = normal, 1 = thicker (dilate)
 ASPECT_RATIOS = [0.625, 0.75, 0.85, 0.90, 1.00, 1.125, 1.25, 1.50, 1.60]  # width stretch factors
 
 # Combinations: stroke (3) × aspect (9) = 27 combinations
-# Per combination: 1 rotation + 1 shear + 1 erasure + 1 stroke breaks = 4 variations
-# Plus 1 original per digit = 109 total per digit
 COMBINATIONS_COUNT = len(STROKE_VARIATIONS) * len(ASPECT_RATIOS)
-
-# Erasure and stroke break parameters (for font generation only)
-ERASURE_PERCENT = 0.15  # 15% of white pixels erased
-STROKE_BREAK_SIZE = 4   # 4 pixels per break
-STROKE_BREAK_COUNT = 6  # 6 breaks scattered randomly
 
 
 def get_google_fonts(api_key, category=None, num_fonts=None):
@@ -133,7 +136,11 @@ def get_google_fonts(api_key, category=None, num_fonts=None):
         params["category"] = category
     
     print(f"Fetching fonts from Google Fonts API (category: {category or 'all'})...")
-    response = requests.get(base_url, params=params)
+    try:
+        response = requests.get(base_url, params=params, timeout=30)
+    except requests.RequestException as e:
+        print(f"Error: API request failed: {e}")
+        return []
     
     if response.status_code != 200:
         print(f"Error: API request failed with status {response.status_code}")
@@ -244,6 +251,7 @@ def render_base_digit(digit, font_path, canvas_size):
     try:
         font = ImageFont.truetype(font_path, font_size)
     except Exception:
+        print(f"Warning: Could not load font: {font_path}")
         return None
     
     # Get text bounding box and center
@@ -265,8 +273,9 @@ def apply_rotation(img, angle):
     img_array = np.array(img, dtype=np.float32) / 255.0
     # Apply rotation using DataAugmentation function
     result_array = apply_rotation_np(img_array, angle)
-    # Convert back to PIL Image (0-255 uint8)
-    return Image.fromarray((result_array * 255).astype(np.uint8))
+    # Convert back to PIL Image (0-255 uint8) with safe range handling
+    result_uint8 = (np.clip(result_array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    return Image.fromarray(result_uint8)
 
 
 def apply_shear(img, shear_degrees):
@@ -275,8 +284,9 @@ def apply_shear(img, shear_degrees):
     img_array = np.array(img, dtype=np.float32) / 255.0
     # Apply shear using DataAugmentation function
     result_array = apply_shear_np(img_array, shear_degrees)
-    # Convert back to PIL Image (0-255 uint8)
-    return Image.fromarray((result_array * 255).astype(np.uint8))
+    # Convert back to PIL Image (0-255 uint8) with safe range handling
+    result_uint8 = (np.clip(result_array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    return Image.fromarray(result_uint8)
 
 
 def apply_aspect_ratio(img, aspect_factor):
@@ -285,8 +295,32 @@ def apply_aspect_ratio(img, aspect_factor):
     img_array = np.array(img, dtype=np.float32) / 255.0
     # Apply aspect ratio using DataAugmentation function
     result_array = apply_aspect_ratio_np(img_array, aspect_factor)
-    # Convert back to PIL Image (0-255 uint8)
-    return Image.fromarray((result_array * 255).astype(np.uint8))
+    # Convert back to PIL Image (0-255 uint8) with safe range handling
+    result_uint8 = (np.clip(result_array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    return Image.fromarray(result_uint8)
+
+def applyGF_post_processing(img):
+    result = img.copy()
+
+    result = np.array(result, dtype=np.float32) / 255.0
+
+    if np.random.random() < BLUR_PROB:
+        radius = np.random.uniform(*BLUR_RADIUS_RANGE)
+        result = apply_blur(result, radius)
+
+    if np.random.random() < ERASURE_PROB:
+        result = apply_random_pixel_erasure(result, ERASURE_PERCENT)
+
+    if np.random.random() < BREAKS_PROB:
+        result = apply_stroke_breaks(result, STROKE_BREAK_SIZE, STROKE_BREAK_COUNT)
+
+    if np.random.random() < NOISE_PROB:
+        result = apply_noise(result, NOISE_STD)
+
+    result_uint8 = (np.clip(result, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    result = Image.fromarray(result_uint8)
+
+    return result
 
 
 def find_bounding_box(img):
@@ -367,12 +401,11 @@ def crop_resize_with_margin(img, target_size, margin=2, bbox=None):
     return result
 
 
-def apply_noise(img):
-    """Add Gaussian noise to image (matches DigitClassifierALL.py GaussNoise)."""
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    noise = np.random.normal(0, NOISE_STD, img_array.shape)
-    noisy = np.clip(img_array + noise, 0, 1)
-    return Image.fromarray((noisy * 255).astype(np.uint8))
+def apply_noise(img, noise_std):
+    """Add Gaussian noise to image."""
+    noise = np.random.normal(0, noise_std, img.shape)
+    noisy = np.clip(img + noise, 0, 1)
+    return noisy
 
 
 def apply_stroke_variation(img, variation):
@@ -399,51 +432,14 @@ def apply_stroke_variation(img, variation):
         # Apply thickening using DataAugmentation function
         result_array = apply_thickening_np(img_array)
     
-    # Convert back to PIL Image (0-255 uint8)
-    return Image.fromarray((result_array * 255).astype(np.uint8))
+    # Convert back to PIL Image (0-255 uint8) with safe range handling
+    result_uint8 = (np.clip(result_array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    return Image.fromarray(result_uint8)
 
 
-def apply_random_pixel_erasure(img, erasure_percent=ERASURE_PERCENT):
+def apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None):
     """
-    Randomly erase a percentage of white stroke pixels.
-    
-    Args:
-        img: PIL Image (grayscale)
-        erasure_percent: Fraction of white pixels to erase (default 0.15 = 15%)
-    
-    Returns:
-        PIL Image with some pixels erased
-    """
-    # Convert PIL Image to numpy array (0-1 float32)
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    # Apply erasure using DataAugmentation function
-    result_array = apply_random_pixel_erasure_np(img_array, erasure_percent)
-    # Convert back to PIL Image (0-255 uint8)
-    return Image.fromarray((result_array * 255).astype(np.uint8))
-
-
-def apply_stroke_breaks(img, break_size=STROKE_BREAK_SIZE, num_breaks=STROKE_BREAK_COUNT):
-    """
-    Apply small contiguous breaks (gaps) in the stroke.
-    
-    Args:
-        img: PIL Image (grayscale)
-        break_size: Size of each break in pixels (default 4)
-        num_breaks: Number of breaks to apply (default 6)
-    
-    Returns:
-        PIL Image with stroke breaks
-    """
-    # Convert PIL Image to numpy array (0-1 float32)
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    # Apply stroke breaks using DataAugmentation function
-    result_array = apply_stroke_breaks_np(img_array, break_size, num_breaks)
-    # Convert back to PIL Image (0-255 uint8)
-    return Image.fromarray((result_array * 255).astype(np.uint8))
-
-def apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None):
-    """
-    Apply aspect ratio, stroke variation, noise, and crop/resize with margin.
+    Apply aspect ratio, stroke variation, and crop/resize with margin.
     No defaults. Everything must be specified.
     """
     img = apply_aspect_ratio(img, aspect_ratio)
@@ -452,19 +448,19 @@ def apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_si
         img = func(img)
     # Find bounding box BEFORE noise
     bbox = find_bounding_box(img)
-    img = apply_noise(img)
     img = crop_resize_with_margin(img, target_size, margin=margin, bbox=bbox)
     return img
+
 
 def generate_augmented_variations(base_img, target_size, margin=2):
     """
     Generate all augmented variations for a base digit image.
     
     Creates 27 combinations (stroke × aspect) × 4 variation types:
-    - 1 rotation (random from either negative or positive range)
-    - 1 shear (random from either negative or positive range)
-    - 1 with 15% random pixel erasure (no rotation/shear)
-    - 1 with 6 stroke breaks at 4px (no rotation/shear)
+    - 1 rotation (random from either negative range)
+    - 1 rotation (random from either positive range)
+    - 1 shear (random from either negative range)
+    - 1 shear (random from either positive range)
     = 108 variations
     Plus 1 original = 109 total variations per digit.
     
@@ -485,41 +481,38 @@ def generate_augmented_variations(base_img, target_size, margin=2):
     
     # For each combination, generate 4 variation types
     for stroke_var, aspect_ratio in combinations:
-        # Variation 1: ROTATION (random from either negative or positive range)
+        # Variation 1: ROTATION negative range
         img = base_img.copy()
-        if np.random.rand() < 0.5:
-            angle = np.random.uniform(*ROTATION_RANGE_NEG)
-        else:
-            angle = np.random.uniform(*ROTATION_RANGE_POS)
+        angle = np.random.uniform(*ROTATION_RANGE_NEG)
         img = apply_rotation(img, angle)
-        img = apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
+        img = apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
+        variations.append(img)
+                
+        # Variation 2: ROTATION positive range
+        img = base_img.copy()
+        angle = np.random.uniform(*ROTATION_RANGE_POS)
+        img = apply_rotation(img, angle)
+        img = apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
         variations.append(img)
         
-        # Variation 2: SHEAR (random from either negative or positive range)
-        img = base_img.copy()
-        if np.random.rand() < 0.5:
-            shear = np.random.uniform(*SHEAR_RANGE_NEG)
-        else:
-            shear = np.random.uniform(*SHEAR_RANGE_POS)
+        # Variation 3: SHEAR negative range
+        img = base_img.copy() 
+        shear = np.random.uniform(*SHEAR_RANGE_NEG)
         img = apply_shear(img, shear)
-        img = apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
+        img = apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
         variations.append(img)
-        
-        # Variation 3: 15% RANDOM PIXEL ERASURE (no rotation/shear)
-        img = base_img.copy()
-        img = apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=apply_random_pixel_erasure)
+
+        # Variation 4: SHEAR positive range
+        img = base_img.copy() 
+        shear = np.random.uniform(*SHEAR_RANGE_POS)
+        img = apply_shear(img, shear)
+        img = apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
         variations.append(img)
-        
-        # Variation 4: 6 STROKE BREAKS at 4px (no rotation/shear)
-        img = base_img.copy()
-        img = apply_aspect_stroke_func_noise_crop(img, aspect_ratio, stroke_var, target_size, margin, func=apply_stroke_breaks)
-        variations.append(img)
-    
+            
     # Add 1 original: no rotation, no shear, no erasure, no breaks, stroke=0, aspect=1.0
     img = base_img.copy()
     # Find bounding box BEFORE noise
     bbox = find_bounding_box(img)
-    img = apply_noise(img)
     img = crop_resize_with_margin(img, target_size, margin=margin, bbox=bbox)
     variations.append(img)
     
@@ -549,7 +542,7 @@ def get_font_weights_to_use(files):
     return []
 
 
-def generate_digit_images(api_key, output_dir, target_size=28):
+def generate_digit_images(api_key, output_dir, target_size):
     """
     Main function to generate augmented digit images from Google Fonts.
     
@@ -564,7 +557,7 @@ def generate_digit_images(api_key, output_dir, target_size=28):
     Args:
         api_key: Google Fonts API key
         output_dir: Directory to save generated images
-        target_size: Output image size (28 or 64, default: 64)
+        target_size: Output image size (28 or 64)
         
     Returns:
         Tuple of ((x_train, y_train_softmax), (x_test, y_test_softmax))
@@ -627,7 +620,7 @@ def generate_digit_images(api_key, output_dir, target_size=28):
                 for digit in DIGITS:
                     digit_label = int(digit)
                     
-                    # Render base digit (400x400) - font size auto-scales to 50% of canvas
+                    # Render base digit (400x400) - font size auto-scales to 45% of canvas
                     # Large canvas with smaller font allows room for rotation/shear/aspect without clipping
                     base_img = render_base_digit(digit, font_path, canvas_size=400)
                     if base_img is None:
@@ -636,6 +629,8 @@ def generate_digit_images(api_key, output_dir, target_size=28):
                     # Generate all variations (109 per digit)
                     all_variations = generate_augmented_variations(base_img, target_size=target_size)
                     
+                    all_variations = [applyGF_post_processing(img) for img in all_variations]
+
                     for img in all_variations:
                         # Collect for numpy array
                         img_array = np.array(img, dtype=np.float32) / 255.0
@@ -650,6 +645,7 @@ def generate_digit_images(api_key, output_dir, target_size=28):
                 try:
                     os.unlink(font_path)
                 except:
+                    print(f"Warning: Could not delete font file: {font_path}")
                     pass
     
     print(f"\n{'='*60}")
@@ -674,7 +670,7 @@ def generate_digit_images(api_key, output_dir, target_size=28):
     # Convert to numpy arrays and split into train/test
     if all_images:
         x_data = np.array(all_images)
-        x_data = np.expand_dims(x_data, axis=-1)  # Add channel dimension (N, 64, 64, 1)
+        x_data = np.expand_dims(x_data, axis=-1) 
         
         # Softmax labels (integer)
         y_softmax = np.array(all_labels, dtype=np.int32)
@@ -718,6 +714,12 @@ def generate_digit_images(api_key, output_dir, target_size=28):
                     else:
                         test_indices.append(idx)
         
+        if len(train_indices) < 1:
+            raise ValueError("Training data is empty.")
+
+        if len(test_indices) < 1:
+            raise ValueError("Testing data is empty.")
+
         train_indices = np.array(train_indices)
         test_indices = np.array(test_indices)
         
@@ -752,9 +754,9 @@ def generate_digit_images(api_key, output_dir, target_size=28):
         train_softmax_path = output_path / f"font_digits_train_augmented_{target_size}x{target_size}.npz"
         test_softmax_path = output_path / f"font_digits_test_augmented_{target_size}x{target_size}.npz"
         
-        # Convert to uint8 for smaller file size (consistent with other augmentation scripts)
-        x_train_uint8 = (x_train * 255).astype(np.uint8)
-        x_test_uint8 = (x_test * 255).astype(np.uint8)
+        # Convert to uint8 for smaller file size (safe range handling)
+        x_train_uint8 = (np.clip(x_train, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+        x_test_uint8 = (np.clip(x_test, 0.0, 1.0) * 255.0).round().astype(np.uint8)
         
         np.savez_compressed(train_softmax_path, x=x_train_uint8, y=y_train_softmax)
         np.savez_compressed(test_softmax_path, x=x_test_uint8, y=y_test_softmax)
@@ -805,10 +807,9 @@ Each font uses 1 weight (preferring regular).
     parser.add_argument("--output-dir", type=str, 
                         default="./data/font_digits",
                         help="Output directory for generated images")
-    parser.add_argument("--size", type=int,
-                        default=28,
+    parser.add_argument("--size", type=int, required=True,
                         choices=[28, 64],
-                        help="Output image size (28 or 64, default: 28)")
+                        help="Output image size (28 or 64)")
     
     args = parser.parse_args()
     
