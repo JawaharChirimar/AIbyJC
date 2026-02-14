@@ -133,7 +133,16 @@ def _load_dataset_npz(filepath, target_size):
     
     data = np.load(filepath)
     x = data['x'].astype(np.float32)
-    y = data['y_softmax'].astype(np.int32) if 'y_softmax' in data else data['y'].astype(np.int32)
+    y = data['y'].astype(np.int32)
+
+    if y is None or y.size == 0:
+        raise ValueError(f"No labels found in {filepath}")
+
+    if x is None or x.size == 0:
+        raise ValueError(f"No images found in {filepath}")
+
+    if x.shape[0] != y.shape[0]:
+        raise ValueError(f"Mismatch: {x.shape[0]} images but {y.shape[0]} labels")
     
     if x.max() > 1.0:
         x = x / 255.0
@@ -161,7 +170,7 @@ def load_dataset_data(dataset_name, dataset_dir, split='train', target_size=28, 
         dataset_dir: Path to dataset directory
         split: 'train' or 'test'
         target_size: Image size (28 or 64)
-        suffix: Optional suffix before .npz (e.g., "_softmax" for custom_one files)
+        suffix: Optional suffix before .npz
     """
     print(f"\n{'='*70}")
     print(f"Loading {dataset_name.upper()} {split.upper()} data ({target_size}x{target_size})")

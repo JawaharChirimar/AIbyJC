@@ -235,7 +235,7 @@ split, target_size, force, augment_ratio):
     else:
         x_uint8 = np.clip(all_images, 0.0, 1.0)
         x_uint8 = (x_uint8 * 255).round().astype(np.uint8)
-    np.savez_compressed(output_file, x=x_uint8, y_softmax=all_labels)
+    np.savez_compressed(output_file, x=x_uint8, y=all_labels)
     
     file_size = output_file.stat().st_size / (1024 * 1024)
     print(f"  Saved {len(all_images):,} images")

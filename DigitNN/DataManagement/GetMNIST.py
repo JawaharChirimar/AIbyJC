@@ -42,7 +42,7 @@ def load_mnist_size(target_size=28, force_regenerate=False):
     
     If data already matches target_size, no processing is performed.
     
-    Saves train/test files with both softmax labels (images stored once).
+    Saves train/test files with softmax format labels (images stored once).
     
     Args:
         target_size: Target size (28 or 64, default: 28)
@@ -64,9 +64,9 @@ def load_mnist_size(target_size=28, force_regenerate=False):
             train_data = np.load(train_file)
             test_data = np.load(test_file)
             x_train = train_data['x']
-            y_train = train_data['y_softmax']
+            y_train = train_data['y']
             x_test = test_data['x']
-            y_test = test_data['y_softmax']
+            y_test = test_data['y']
             print(f"  Loaded: {len(x_train)} training, {len(x_test)} test ({target_size}x{target_size})")
             return x_train, y_train, x_test, y_test
         except Exception as e:
@@ -97,12 +97,12 @@ def load_mnist_size(target_size=28, force_regenerate=False):
     
     # Save files (images once, both label formats)
     print(f"  Saving to {MNIST_DIR}...")
-    np.savez(train_file, x=x_train_scaled, y_softmax=y_train)
-    np.savez(test_file, x=x_test_scaled, y_softmax=y_test)
+    np.savez(train_file, x=x_train_scaled, y=y_train)
+    np.savez(test_file, x=x_test_scaled, y=y_test)
     
     print(f"  Saved:")
-    print(f"    {train_file.name} - x: {x_train_scaled.shape}, y_softmax: {y_train.shape}")
-    print(f"    {test_file.name} - x: {x_test_scaled.shape}, y_softmax: {y_test.shape}")
+    print(f"    {train_file.name} - x: {x_train_scaled.shape}, y: {y_train.shape}")
+    print(f"    {test_file.name} - x: {x_test_scaled.shape}, y: {y_test.shape}")
     
     return x_train_scaled, y_train, x_test_scaled, y_test
 
@@ -139,7 +139,7 @@ if __name__ == "__main__":
         print(f"   Training: {x_train.shape}, labels: {np.unique(y_train)}")
         print(f"   Test: {x_test.shape}, labels: {np.unique(y_test)}")
     else:
-        print("   MNIST 64x64 not available.")
+        print(f"   MNIST {args.size}x{args.size} not available.")
     
     print("\n" + "="*60)
     print("Done!")

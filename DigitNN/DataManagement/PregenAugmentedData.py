@@ -10,7 +10,7 @@ This replaces the old approach of a single combined augmented file.
 
 import numpy as np
 from pathlib import Path
-from DataManagement.NonDigitGenerator import DATA_DIR
+from DataManagement.PregenAugmentedBase import DATA_DIR
 
 def load_helper(data_path,dataset_name,image_size,x_list,y_list,dataset_names):
     if data_path.exists():
@@ -18,6 +18,15 @@ def load_helper(data_path,dataset_name,image_size,x_list,y_list,dataset_names):
             data = np.load(data_path)
             x = data['x'].astype(np.float32)
             y = data['y'].astype(np.int32)
+
+            if y is None or y.size == 0:
+                raise ValueError(f"No labels found in {data_path}")
+
+            if x is None or x.size == 0:
+                raise ValueError(f"No images found in {data_path}")
+
+            if x.shape[0] != y.shape[0]:
+                raise ValueError(f"Mismatch: {x.shape[0]} images but {y.shape[0]} labels")
             
             # Normalize if needed (uint8 -> float32 [0,1])
             if x.max() > 1.0:

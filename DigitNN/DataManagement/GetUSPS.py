@@ -130,9 +130,9 @@ def load_usps_size(target_size=28, force_regenerate=False):
             train_data = np.load(train_file)
             test_data = np.load(test_file)
             x_train = train_data['x']
-            y_train = train_data['y_softmax']
+            y_train = train_data['y']
             x_test = test_data['x']
-            y_test = test_data['y_softmax']
+            y_test = test_data['y']
             print(f"  Loaded: {len(x_train)} training, {len(x_test)} test ({target_size}x{target_size})")
             return x_train, y_train, x_test, y_test
         except Exception as e:
@@ -162,12 +162,12 @@ def load_usps_size(target_size=28, force_regenerate=False):
     
     # Save files
     print(f"  Saving to {USPS_DIR}...")
-    np.savez(train_file, x=x_train_scaled, y_softmax=y_train)
-    np.savez(test_file, x=x_test_scaled, y_softmax=y_test)
+    np.savez(train_file, x=x_train_scaled, y=y_train)
+    np.savez(test_file, x=x_test_scaled, y=y_test)
     
     print(f"  Saved:")
-    print(f"    {train_file.name} - x: {x_train_scaled.shape}, y_softmax: {y_train.shape}")
-    print(f"    {test_file.name} - x: {x_test_scaled.shape}, y_softmax: {y_test.shape}")
+    print(f"    {train_file.name} - x: {x_train_scaled.shape}, y: {y_train.shape}")
+    print(f"    {test_file.name} - x: {x_test_scaled.shape}, y: {y_test.shape}")
     
     return x_train_scaled, y_train, x_test_scaled, y_test
 

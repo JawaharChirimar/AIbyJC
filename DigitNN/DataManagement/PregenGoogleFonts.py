@@ -560,7 +560,7 @@ def generate_digit_images(api_key, output_dir, target_size):
         target_size: Output image size (28 or 64)
         
     Returns:
-        Tuple of ((x_train, y_train_softmax), (x_test, y_test_softmax))
+        Tuple of ((x_train, y_train), (x_test, y_test))
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -672,8 +672,8 @@ def generate_digit_images(api_key, output_dir, target_size):
         x_data = np.array(all_images)
         x_data = np.expand_dims(x_data, axis=-1) 
         
-        # Softmax labels (integer)
-        y_softmax = np.array(all_labels, dtype=np.int32)
+        # labels (integer)
+        y_data = np.array(all_labels, dtype=np.int32)
         
         # Split into train/test (80/20) by digit and font category
         print(f"\n{'='*60}")
@@ -730,10 +730,10 @@ def generate_digit_images(api_key, output_dir, target_size):
         
         # Create train/test splits
         x_train = x_data[train_indices]
-        y_train_softmax = y_softmax[train_indices]
+        y_train = y_data[train_indices]
         
         x_test = x_data[test_indices]
-        y_test_softmax = y_softmax[test_indices]
+        y_test = y_data[test_indices]
         
         # Print split statistics
         print(f"\nTrain set: {len(x_train):,} samples")
@@ -745,33 +745,33 @@ def generate_digit_images(api_key, output_dir, target_size):
         print("Digit | Train | Test | Total")
         print("-" * 30)
         for digit in range(10):
-            train_count = np.sum(y_train_softmax == digit)
-            test_count = np.sum(y_test_softmax == digit)
+            train_count = np.sum(y_train == digit)
+            test_count = np.sum(y_test == digit)
             total_count = train_count + test_count
             print(f"  {digit}   | {train_count:5,} | {test_count:4,} | {total_count:5,}")
         
         # Save train/test splits (include size in filename)
-        train_softmax_path = output_path / f"font_digits_train_augmented_{target_size}x{target_size}.npz"
-        test_softmax_path = output_path / f"font_digits_test_augmented_{target_size}x{target_size}.npz"
+        train_path = output_path / f"font_digits_train_augmented_{target_size}x{target_size}.npz"
+        test_path = output_path / f"font_digits_test_augmented_{target_size}x{target_size}.npz"
         
         # Convert to uint8 for smaller file size (safe range handling)
         x_train_uint8 = (np.clip(x_train, 0.0, 1.0) * 255.0).round().astype(np.uint8)
         x_test_uint8 = (np.clip(x_test, 0.0, 1.0) * 255.0).round().astype(np.uint8)
         
-        np.savez_compressed(train_softmax_path, x=x_train_uint8, y=y_train_softmax)
-        np.savez_compressed(test_softmax_path, x=x_test_uint8, y=y_test_softmax)
+        np.savez_compressed(train_path, x=x_train_uint8, y=y_train)
+        np.savez_compressed(test_path, x=x_test_uint8, y=y_test)
         
         print(f"\n{'='*60}")
         print("Saved numpy arrays:")
-        print(f"  Train: {train_softmax_path}")
+        print(f"  Train: {train_path}")
         print(f"    x shape: {x_train_uint8.shape} (uint8, 0-255)")
-        print(f"    y shape: {y_train_softmax.shape} (integer labels 0-9)")
-        print(f"  Test: {test_softmax_path}")
+        print(f"    y shape: {y_train.shape} (integer labels 0-9)")
+        print(f"  Test: {test_path}")
         print(f"    x shape: {x_test_uint8.shape} (uint8, 0-255)")
-        print(f"    y shape: {y_test_softmax.shape} (integer labels 0-9)")
+        print(f"    y shape: {y_test.shape} (integer labels 0-9)")
         print(f"{'='*60}")
         
-        return (x_train, y_train_softmax), (x_test, y_test_softmax)
+        return (x_train, y_train), (x_test, y_test)
     
     raise ValueError("No images were generated. All fonts may have failed to download or render.")
 
