@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PregenData.py
+GetDataAll.py
 
 Pre-generates all upscaled datasets in one run.
 Run this once before training to create cached versions.
@@ -15,9 +15,9 @@ Creates:
 - data/ardis/ardis_train_{size}x{size}.npz, ardis_test_{size}x{size}.npz
 
 Usage:
-    python PregenData.py                    # Default: 28x28
-    python PregenData.py --size 64          # 64x64
-    python PregenData.py --size 28 --force  # Force regenerate
+    python GetDataAll.py                    # Default: 28x28
+    python GetDataAll.py --size 64          # 64x64
+    python GetDataAll.py --size 28 --force  # Force regenerate
 """
 
 import argparse
