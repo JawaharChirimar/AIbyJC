@@ -8,11 +8,16 @@ Uses softmax with 11 classes: 10 digits (0-9) + 1 "not a digit" class (10).
 
 import os
 import argparse
+import sys
 import cv2
 from pathlib import Path
 from datetime import datetime
 import json
 import numpy as np
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -23,8 +28,8 @@ from OODDetection import (EnergyScorer, _build_logit_model,
     _is_softmax_model, _is_logit_model, 
     _build_energy_model_from_path, LogitLayer)
 
-# Import DATA_DIR from NonDigitGenerator (used for data paths)
-from DataManagement.NonDigitGenerator import DATA_DIR
+# Import DATA_DIR from DataCommon (used for data paths)
+from DataManagement.DataCommon import DATA_DIR
 # Import pre-generated augmented data loader
 from DataManagement.PregenAugmentedData import load_augmented_data
 # Import stratified batch generator
@@ -39,12 +44,12 @@ BATCH_SIZE = 128             # Batch size for training
 def create_digit_classifier_model(input_size=28, use_balanced_loss=False,
 lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=64):
     """
-    Create a CNN model for digit classification with 11 classes 
+    Create a CNN model for digit classification with 11 classes
     (0-9 digits + 10 "not a digit").
-    
-    Uses deep model architecture with 6 conv layers, optimized for 
+
+    Uses deep model architecture with 6 conv layers, optimized for
     input_size x input_size images.
-    Always uses softmax activation. 
+    Model outputs logits (no final activation).
     Loss function can be either BalancedLoss or sparse_categorical_crossentropy.
     
     Args:
@@ -62,9 +67,7 @@ lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=64):
     # Model capacity for large dataset (240k+ samples)
     number_convolution_channels = 32
     number_convolution_channelsF = 64
-    
-    # Always use softmax with 11 classes (0-9 digits + 10 "not a digit")
-    output_activation = 'softmax'
+
     # Choose loss function
     if use_balanced_loss:
         loss_function = BalancedLoss(num_classes=11, var_penalty=lambda_weight)
@@ -209,7 +212,7 @@ def load_digit_classifier_and_energy_scorer(classifier_model_path, input_size=64
 def _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
 learning_rate, neurons_in_dense_layer):
     print(f"Creating new digit classifier model for 11 classes (digits 0-9, and 10 'not a digit')...")
-    print(f"  Input ({input_size}x{input_size} input, loss: {loss_type})...")
+    print(f"  Input ({input_size}x{input_size} input, loss)...")
     if use_balanced_loss:
         print(f"  Loss: BalancedLoss with lambda weight: {lambda_weight}")
     else:
@@ -276,11 +279,11 @@ def train_digit_classifier(
                 print(f"  Initial model loaded successfully")
                 # Recompile with new learning rate and loss function settings
                 if use_balanced_loss:
-                    loss_function = BalancedLoss(num_classes=10, 
+                    loss_function = BalancedLoss(num_classes=11, 
                     var_penalty=lambda_weight,
                     digit_only_variance=True)
                 else:
-                    loss_function = 'sparse_categorical_crossentropy'
+                    loss_function = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
                     
                 model.compile(
                     optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
