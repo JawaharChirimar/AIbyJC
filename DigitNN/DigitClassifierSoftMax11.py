@@ -6,13 +6,13 @@ Provides functions for creating, training, and using a CNN-based digit classifie
 Uses softmax with 11 classes: 10 digits (0-9) + 1 "not a digit" class (10).
 """
 
+import json
 import os
 import argparse
 import sys
 import cv2
 from pathlib import Path
 from datetime import datetime
-import json
 import numpy as np
 
 # Add parent directory to path for imports

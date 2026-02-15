@@ -1,9 +1,11 @@
-import os
 import json
+import os
 from datetime import datetime
+
 import cv2
 import numpy as np
 import tensorflow as tf
+
 from tensorflow import keras
 from OODDetection import (LogitLayer, _is_logit_model, _build_logit_model, 
     _is_softmax_model, EnergyScorer)
@@ -228,23 +230,6 @@ def calibrate_energy_scorer_helper(
         return True
     except Exception as e:
         raise ValueError(f"calibrate_energy_scorer_helper: Failed to save calibration to {energy_file_path}: {e}")
-
-
-def load_energy_caliberation_helper(calibration_file, energy_scorer):
-    """
-    Load the energy scorer calibration from a file.
-    """
-    if os.path.exists(calibration_file):
-        print("Loading energy scorer calibration for model...")
-        try:
-            energy_scorer.load_calibration(calibration_file, percentile=99.5)
-        except Exception as e:
-            raise ValueError(f"load_energy_caliberation_helper: Could not load calibration: {e}")
-    else:
-        print("No calibration file found - calibration will need to be done separately")
-        return -1
-    
-    return 0
 
 
 def classify_digit(classifier_model, energy_scorer, digit_image, input_size=28):
