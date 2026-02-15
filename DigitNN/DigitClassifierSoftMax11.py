@@ -39,7 +39,7 @@ from StratifiedBatchGenerator import create_stratified_batch_generator
 # CONFIGURABLE CONSTANTS
 # =============================================================================
 DROPOUT_RATE = 0.5          # Dropout rate in model (prevents overfitting)
-BATCH_SIZE = 128             # Batch size for training
+BATCH_SIZE = 256             # Batch size for training
 
 def create_digit_classifier_model(input_size=28, use_balanced_loss=False,
 lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=64):
