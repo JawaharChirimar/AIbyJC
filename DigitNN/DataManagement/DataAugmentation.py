@@ -17,6 +17,16 @@ that generate or augment datasets.
 import numpy as np
 import cv2
 from PIL import Image, ImageFilter
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from DataManagement.DataCommon import (
+    find_bounding_box,
+    crop_resize_with_margin
+)
 
 
 # =============================================================================
@@ -65,16 +75,17 @@ STROKE_BREAK_COUNT = 6  # 6 breaks scattered randomly
 # TRANSFORM FUNCTIONS
 # =============================================================================
 
-def apply_rotation(img_array, angle):
+def apply_rotation(img_array, angle, target_size=None):
     """
     Apply rotation to image without clipping.
-    
+
     Args:
         img_array: numpy array (H, W) or (H, W, 1), values 0-1
         angle: rotation angle in degrees
-    
+        target_size: Target size for output (default: None = use original max dimension)
+
     Returns:
-        Rotated image array, same shape
+        Rotated image array, resized to (target_size, target_size)
     """
     import math
     
@@ -83,16 +94,19 @@ def apply_rotation(img_array, angle):
     if img_array.ndim == 3 and img_array.shape[-1] == 1:
         img_array = img_array.squeeze(-1)
         squeeze = True
-    
+
     h, w = img_array.shape
-    original_size = max(h, w)  # Use max for square assumption
-    
+    original_size = max(h, w) 
+
+    if target_size is None:
+        target_size = original_size
+
     # Calculate required size for rotation: |cos(θ)| + |sin(θ)|
     angle_rad = math.radians(abs(angle))
     required_size = original_size * (abs(math.cos(angle_rad)) + abs(math.sin(angle_rad)))
     
     # Add 2px padding on each side (+4px total)
-    canvas_size = int(math.ceil(required_size)) + 4
+    canvas_size = max(int(math.ceil(required_size)) + 4, 2*original_size)  # Ensure canvas is large enough for all angles
     
     # Create larger canvas and embed original image centered
     canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
@@ -110,8 +124,11 @@ def apply_rotation(img_array, angle):
     
     # Resize back to original size using LANCZOS
     rotated_pil = Image.fromarray(rotated)
-    result_pil = rotated_pil.resize((w, h), Image.Resampling.LANCZOS)
-    
+    bbox = find_bounding_box(rotated_pil)
+    result_pil = crop_resize_with_margin(rotated_pil, 
+                                         target_size=target_size, 
+                                         bbox=bbox)
+
     # Back to numpy float
     result = np.array(result_pil).astype(np.float32) / 255.0
     
@@ -121,16 +138,17 @@ def apply_rotation(img_array, angle):
     return result
 
 
-def apply_shear(img_array, shear_degrees):
+def apply_shear(img_array, shear_degrees, target_size=None):
     """
     Apply vertical shear transformation without clipping.
-    
+
     Args:
         img_array: numpy array (H, W) or (H, W, 1), values 0-1
         shear_degrees: shear angle in degrees
-    
+        target_size: Target size for output (default: None = use original max dimension)
+
     Returns:
-        Sheared image array, same shape
+        Sheared image array, resized to (target_size, target_size)
     """
     import math
     
@@ -140,6 +158,11 @@ def apply_shear(img_array, shear_degrees):
         squeeze = True
     
     h, w = img_array.shape
+    original_size = max(h, w) 
+
+    if target_size is None:
+        target_size = original_size
+
     
     # Preserve shear direction (sign) for the transform matrix.
     # Use absolute magnitude only for canvas sizing.
@@ -148,30 +171,32 @@ def apply_shear(img_array, shear_degrees):
     required_width = w + extra_width
     
     # Add 2px padding on each side (+4px total)
-    canvas_width = required_width + 4
-    canvas_height = h + 4  # Also add padding to height for safety
+    canvas_size = max(required_width + 4, h + 4, 2 * original_size)  # Ensure canvas is large enough for all shears
     
     # Create larger canvas and embed original image centered
-    canvas = np.zeros((canvas_height, canvas_width), dtype=np.float32)
-    offset_y = (canvas_height - h) // 2
-    offset_x = (canvas_width - w) // 2
+    canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
+    offset_y = (canvas_size - h) // 2
+    offset_x = (canvas_size - w) // 2
     canvas[offset_y:offset_y+h, offset_x:offset_x+w] = img_array
     
     # Convert to uint8 for cv2
     canvas_uint8 = (canvas * 255).astype(np.uint8)
     
     # Shear on larger canvas
-    center_x = canvas_width // 2
-    center_y = canvas_height // 2
+    center_x = canvas_size // 2
+    center_y = canvas_size // 2
     M = np.float32([[1, 0, 0],
                     [shear_factor, 1, -shear_factor * center_x]])
     
-    sheared = cv2.warpAffine(canvas_uint8, M, (canvas_width, canvas_height), borderValue=0)
+    sheared = cv2.warpAffine(canvas_uint8, M, (canvas_size, canvas_size), borderValue=0)
     
     # Resize back to original size using LANCZOS
     sheared_pil = Image.fromarray(sheared)
-    result_pil = sheared_pil.resize((w, h), Image.Resampling.LANCZOS)
-    
+    bbox = find_bounding_box(sheared_pil)
+    result_pil = crop_resize_with_margin(sheared_pil, 
+                                         target_size=target_size, 
+                                         bbox=bbox)
+
     # Back to numpy float
     result = np.array(result_pil).astype(np.float32) / 255.0
     
@@ -181,54 +206,60 @@ def apply_shear(img_array, shear_degrees):
     return result
 
 
-def apply_aspect_ratio(img_array, aspect_factor):
+def apply_aspect_ratio(img_array, aspect_factor, target_size=None):
     """
     Apply aspect ratio transformation (horizontal stretch/compress) without clipping.
-    
+
     Args:
         img_array: numpy array (H, W) or (H, W, 1), values 0-1
         aspect_factor: >1 = wider, <1 = narrower
-    
+        target_size: Target size for output (default: None = use original max dimension)
+
     Returns:
-        Transformed image array, same shape
+        Transformed image array, resized to (target_size, target_size)
     """
     squeeze = False
     if img_array.ndim == 3 and img_array.shape[-1] == 1:
         img_array = img_array.squeeze(-1)
         squeeze = True
-    
+
     h, w = img_array.shape
-    
-    # Calculate new width after stretch/compress
+    original_size = max(h, w)
+
+    if target_size is None:
+        target_size = original_size
+
+    # Step 1: Apply aspect ratio transformation to the image itself
     new_width = int(w * aspect_factor)
-    
-    # Canvas needs to accommodate the stretched/compressed width
-    # Add 2px padding on each side (+4px total)
-    canvas_width = max(w, new_width) + 4
-    canvas_height = h + 4
-    
-    # Create larger canvas and embed original image centered
-    canvas = np.zeros((canvas_height, canvas_width), dtype=np.float32)
-    offset_y = (canvas_height - h) // 2
-    offset_x = (canvas_width - w) // 2
-    canvas[offset_y:offset_y+h, offset_x:offset_x+w] = img_array
-    
-    # Convert to PIL for resize
-    canvas_uint8 = (canvas * 255).astype(np.uint8)
-    canvas_pil = Image.fromarray(canvas_uint8)
-    
-    # Apply aspect ratio: resize horizontally to new_width (stretches/compresses the image)
-    aspect_resized = canvas_pil.resize((new_width, canvas_height), Image.Resampling.LANCZOS)
-    
-    # Resize back to original size using LANCZOS
-    result_pil = aspect_resized.resize((w, h), Image.Resampling.LANCZOS)
-    
+    img_uint8 = (img_array * 255).astype(np.uint8)
+    img_pil = Image.fromarray(img_uint8)
+
+    # Resize image: width changes by aspect_factor, height stays same
+    transformed_pil = img_pil.resize((new_width, h), Image.Resampling.LANCZOS)
+
+    # Step 2: Create square canvas large enough to hold transformed image
+    canvas_size = max(new_width + 4, h + 4, 2 * original_size)
+
+    # Step 3: Embed transformed image on canvas (centered)
+    canvas = np.zeros((canvas_size, canvas_size), dtype=np.uint8)
+    transformed_array = np.array(transformed_pil)
+    offset_y = (canvas_size - h) // 2
+    offset_x = (canvas_size - new_width) // 2
+    canvas[offset_y:offset_y+h, offset_x:offset_x+new_width] = transformed_array
+
+    # Step 4: Find bounding box and crop with margin
+    canvas_pil = Image.fromarray(canvas)
+    bbox = find_bounding_box(canvas_pil)
+    result_pil = crop_resize_with_margin(canvas_pil, 
+                                         target_size=target_size,
+                                         bbox=bbox)
+
     # Back to numpy float
     result_array = np.array(result_pil).astype(np.float32) / 255.0
-    
+
     if squeeze:
         result_array = np.expand_dims(result_array, -1)
-    
+
     return result_array
 
 
@@ -294,33 +325,56 @@ def apply_thinning(img_array):
     return result
 
 
-def apply_thickening(img_array):
+def apply_thickening(img_array, target_size=None):
     """
-    Apply stroke thickening (dilation).
-    
+    Apply stroke thickening (dilation) with proper bbox handling.
+
     Args:
         img_array: numpy array (H, W) or (H, W, 1), values 0-1
-    
+        target_size: Target size for output (default: None = use original max dimension)
+
     Returns:
-        Thickened image array, same shape
+        Thickened image array, resized to (target_size, target_size)
     """
     squeeze = False
     if img_array.ndim == 3 and img_array.shape[-1] == 1:
         img_array = img_array.squeeze(-1)
         squeeze = True
-    
+
+    h, w = img_array.shape
+    original_size = max(h, w)
+
+    if target_size is None:
+        target_size = original_size
+
+    # Create canvas with 2× minimum guarantee
+    canvas_size = max(h + 4, w + 4, 2 * original_size)
+
+    # Embed original image on canvas
+    canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
+    offset_y = (canvas_size - h) // 2
+    offset_x = (canvas_size - w) // 2
+    canvas[offset_y:offset_y+h, offset_x:offset_x+w] = img_array
+
     # Convert to uint8
-    img_uint8 = (img_array * 255).astype(np.uint8)
-    
-    # Dilate
-    dilated = cv2.dilate(img_uint8, THICK_KERNEL, iterations=THICK_ITERATIONS)
-    
-    # Back to float
-    result = dilated.astype(np.float32) / 255.0
-    
+    canvas_uint8 = (canvas * 255).astype(np.uint8)
+
+    # Dilate on canvas
+    dilated = cv2.dilate(canvas_uint8, THICK_KERNEL, iterations=THICK_ITERATIONS)
+
+    # Find bounding box and crop with margin
+    dilated_pil = Image.fromarray(dilated)
+    bbox = find_bounding_box(dilated_pil)
+    result_pil = crop_resize_with_margin(dilated_pil, 
+                                         target_size=target_size,
+                                         bbox=bbox)
+
+    # Back to numpy float
+    result = np.array(result_pil).astype(np.float32) / 255.0
+
     if squeeze:
         result = np.expand_dims(result, -1)
-    
+
     return result
 
 
@@ -458,25 +512,25 @@ if __name__ == "__main__":
     # Test transforms
     print("\nTesting transforms...")
     
-    rotated = apply_rotation(test_img, 15)
+    rotated = apply_rotation(test_img, 15, target_size=64)
     print(f"  Rotation (15°): shape {rotated.shape}, range [{rotated.min():.2f}, {rotated.max():.2f}]")
     
-    sheared = apply_shear(test_img, 10)
+    sheared = apply_shear(test_img, 10, target_size=64)
     print(f"  Shear (10°): shape {sheared.shape}, range [{sheared.min():.2f}, {sheared.max():.2f}]")
-    
-    wide = apply_aspect_ratio(test_img, 1.5)
+
+    wide = apply_aspect_ratio(test_img, 1.5, target_size=64)
     print(f"  Aspect wide (1.5): shape {wide.shape}, range [{wide.min():.2f}, {wide.max():.2f}]")
-    
-    narrow = apply_aspect_ratio(test_img, 0.7)
+
+    narrow = apply_aspect_ratio(test_img, 0.7, target_size=64)
     print(f"  Aspect narrow (0.7): shape {narrow.shape}, range [{narrow.min():.2f}, {narrow.max():.2f}]")
-    
+
     blurred = apply_blur(test_img, 1.0)
     print(f"  Blur (r=1.0): shape {blurred.shape}, range [{blurred.min():.2f}, {blurred.max():.2f}]")
-    
+
     thinned = apply_thinning(test_img)
     print(f"  Thinning: shape {thinned.shape}, range [{thinned.min():.2f}, {thinned.max():.2f}]")
-    
-    thickened = apply_thickening(test_img)
+
+    thickened = apply_thickening(test_img, target_size=64)
     print(f"  Thickening: shape {thickened.shape}, range [{thickened.min():.2f}, {thickened.max():.2f}]")
         
     print("\n✓ All tests passed!")

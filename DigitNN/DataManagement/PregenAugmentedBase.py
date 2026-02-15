@@ -40,7 +40,7 @@ AUGMENT_RATIO = 0.10
 NUMBER_OF_AUGMENTATIONS = 5
 
 
-def apply_post_processing(img_array):
+def apply_post_processing(img_array, target_size):
     """
     Apply post-processing with independent probability checks (matching PregenAugmentedData.py).
     Each effect is checked independently, so an image can get multiple effects.
@@ -61,7 +61,7 @@ def apply_post_processing(img_array):
         result = apply_thinning(result)
     else:
         if random.random() < THICK_PROB/(1.0-THIN_PROB):
-            result = apply_thickening(result)
+            result = apply_thickening(result, target_size=target_size)
     
     if random.random() < ERASURE_PROB:
         result = apply_random_pixel_erasure(result)
@@ -72,7 +72,7 @@ def apply_post_processing(img_array):
     return result
 
 
-def augment_image_by_index(img_array, label, distortion_index):
+def augment_image_by_index(img_array, label, distortion_index, target_size):
     """
     Generate augmented versions of a single image (geometric transforms only, no post-processing).
     
@@ -86,6 +86,7 @@ def augment_image_by_index(img_array, label, distortion_index):
         2: Shear negative (-16° to -2°)
         3: Aspect wide (1.05 to 2.0)
         4: Aspect narrow (0.5 to 0.95)
+        target_size: Target image size (28 or 64)
     
     Returns:
         A tuple (image, label) 
@@ -96,31 +97,31 @@ def augment_image_by_index(img_array, label, distortion_index):
     # 1. Rotation (random + or -)
     if distortion_index == 0:
         angle = random.uniform(*ROTATION_RANGE_POS) if random.random() > 0.5 else random.uniform(*ROTATION_RANGE_NEG)
-        rotated = apply_rotation(img_array, angle)
+        rotated = apply_rotation(img_array, angle, target_size=target_size)
         return (rotated, label)
     
     # 2. Shear positive (+2° to +16°)
     if distortion_index == 1:
         shear_pos = random.uniform(*SHEAR_RANGE_POS)
-        sheared_pos = apply_shear(img_array, shear_pos)
+        sheared_pos = apply_shear(img_array, shear_pos, target_size=target_size)
         return (sheared_pos, label)
     
     # 3. Shear negative (-16° to -2°)
     if distortion_index == 2:
         shear_neg = random.uniform(*SHEAR_RANGE_NEG)
-        sheared_neg = apply_shear(img_array, shear_neg)
+        sheared_neg = apply_shear(img_array, shear_neg, target_size=target_size)
         return (sheared_neg, label)
     
     # 4. Aspect wide (1.05 to 2.0)
     if distortion_index == 3:
         aspect_wide = random.uniform(*ASPECT_WIDE_RANGE)
-        wide = apply_aspect_ratio(img_array, aspect_wide)
+        wide = apply_aspect_ratio(img_array, aspect_wide, target_size=target_size)
         return (wide, label)
     
     # 5. Aspect narrow (0.5 to 0.95)
     if distortion_index == 4:
         aspect_narrow = random.uniform(*ASPECT_NARROW_RANGE)
-        narrow = apply_aspect_ratio(img_array, aspect_narrow)
+        narrow = apply_aspect_ratio(img_array, aspect_narrow, target_size=target_size)
         return (narrow, label)
     
     return None

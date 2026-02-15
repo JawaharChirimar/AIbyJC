@@ -45,6 +45,11 @@ from PIL import Image, ImageDraw, ImageFont
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from DataManagement.DataCommon import (
+    find_bounding_box,
+    crop_resize_with_margin
+)
+
 from DataManagement.DataAugmentation import (
     ROTATION_RANGE_POS, 
     ROTATION_RANGE_NEG,
@@ -268,34 +273,34 @@ def render_base_digit(digit, font_path, canvas_size):
     return img
 
 
-def apply_rotation(img, angle):
+def apply_rotation(img, angle, target_size):
     """Apply rotation to image."""
     # Convert PIL Image to numpy array (0-1 float32)
     img_array = np.array(img, dtype=np.float32) / 255.0
     # Apply rotation using DataAugmentation function
-    result_array = apply_rotation_np(img_array, angle)
+    result_array = apply_rotation_np(img_array, angle, target_size=target_size)
     # Convert back to PIL Image (0-255 uint8) with safe range handling
     result_uint8 = (np.clip(result_array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
     return Image.fromarray(result_uint8)
 
 
-def apply_shear(img, shear_degrees):
+def apply_shear(img, shear_degrees, target_size):
     """Apply vertical shear transformation to image (in degrees)."""
     # Convert PIL Image to numpy array (0-1 float32)
     img_array = np.array(img, dtype=np.float32) / 255.0
     # Apply shear using DataAugmentation function
-    result_array = apply_shear_np(img_array, shear_degrees)
+    result_array = apply_shear_np(img_array, shear_degrees, target_size=target_size)
     # Convert back to PIL Image (0-255 uint8) with safe range handling
     result_uint8 = (np.clip(result_array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
     return Image.fromarray(result_uint8)
 
 
-def apply_aspect_ratio(img, aspect_factor):
+def apply_aspect_ratio(img, aspect_factor, target_size):
     """Apply aspect ratio distortion (stretch width)."""
     # Convert PIL Image to numpy array (0-1 float32)
     img_array = np.array(img, dtype=np.float32) / 255.0
     # Apply aspect ratio using DataAugmentation function
-    result_array = apply_aspect_ratio_np(img_array, aspect_factor)
+    result_array = apply_aspect_ratio_np(img_array, aspect_factor, target_size=target_size)
     # Convert back to PIL Image (0-255 uint8) with safe range handling
     result_uint8 = (np.clip(result_array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
     return Image.fromarray(result_uint8)
@@ -324,84 +329,6 @@ def applyGF_post_processing(img):
     return result
 
 
-def find_bounding_box(img):
-    """
-    Find bounding box of non-zero pixels in image.
-    
-    Args:
-        img: PIL Image (grayscale)
-    
-    Returns:
-        Tuple (x_min, y_min, x_max, y_max) or None if no non-zero pixels
-    """
-    img_array = np.array(img)
-    coords = np.column_stack(np.where(img_array > 0))
-    
-    if len(coords) == 0:
-        return None
-    
-    y_min, x_min = coords.min(axis=0)
-    y_max, x_max = coords.max(axis=0)
-    
-    return (x_min, y_min, x_max + 1, y_max + 1)
-
-
-def crop_resize_with_margin(img, target_size, margin=2, bbox=None):
-    """
-    Crop digit to bounding box, resize to MAXIMIZE digit size while keeping margin,
-    and paste into target_size image with exactly margin pixels on all sides.
-    
-    The digit is scaled to fill as much of the (target_size - 2*margin) area as possible,
-    maximizing the digit size while maintaining aspect ratio.
-    
-    Args:
-        img: PIL Image (after augmentation)
-        target_size: Final image size (28 or 64)
-        margin: Margin in pixels (default 2)
-        bbox: Optional pre-computed bounding box (x_min, y_min, x_max, y_max).
-              If None, will find bounding box from img.
-    
-    Returns:
-        PIL Image of size target_size x target_size with maximized digit and exactly margin pixels on all sides
-    """
-    # Use provided bbox or find it
-    if bbox is None:
-        bbox = find_bounding_box(img)
-
-    if bbox is None:
-        # No content, return black image of target size
-        return Image.new('L', (target_size, target_size), color=0)
-    
-    x_min, y_min, x_max, y_max = bbox
-    
-    # Crop to bounding box (no margin yet)
-    cropped = img.crop((x_min, y_min, x_max, y_max))
-    crop_width = x_max - x_min
-    crop_height = y_max - y_min
-    
-    # Calculate target digit size (area to fill)
-    digit_size = target_size - 2 * margin
-    
-    # Scale to maximize digit - use the larger dimension to determine scale
-    # This ensures the digit fills as much space as possible while maintaining aspect ratio
-    scale = digit_size / max(crop_width, crop_height)
-    new_width = int(crop_width * scale)
-    new_height = int(crop_height * scale)
-    
-    # Resize maintaining aspect ratio
-    resized = cropped.resize((new_width, new_height), Image.Resampling.LANCZOS)
-    
-    # Create final image with target_size x target_size (black background)
-    result = Image.new('L', (target_size, target_size), color=0)
-    
-    # Paste resized digit centered in the available area (with margin)
-    paste_x = margin + (digit_size - new_width) // 2
-    paste_y = margin + (digit_size - new_height) // 2
-    result.paste(resized, (paste_x, paste_y))
-    
-    return result
-
-
 def apply_noise(img, noise_std):
     """Add Gaussian noise to image."""
     noise = np.random.normal(0, noise_std, img.shape)
@@ -409,51 +336,48 @@ def apply_noise(img, noise_std):
     return noisy
 
 
-def apply_stroke_variation(img, variation):
+def apply_stroke_variation(img, variation, target_size):
     """
     Apply stroke thickness variation.
-    
+
     Args:
         img: PIL Image
         variation: -1 = thinner (erode with 3x3 cross), 0 = normal, 1 = thicker (dilate)
-    
+        target_size: Target size for output
+
     Returns:
         PIL Image with modified stroke thickness
     """
     if variation == 0:
         return img
-    
+
     # Convert PIL Image to numpy array (0-1 float32)
     img_array = np.array(img, dtype=np.float32) / 255.0
-    
+
     if variation == -1:
-        # Apply thinning using DataAugmentation function
+        # Apply thinning using DataAugmentation function (no target_size needed)
         result_array = apply_thinning_np(img_array)
     else:  # variation == 1
-        # Apply thickening using DataAugmentation function
-        result_array = apply_thickening_np(img_array)
-    
+        # Apply thickening using DataAugmentation function (with target_size for bbox handling)
+        result_array = apply_thickening_np(img_array, target_size=target_size)
+
     # Convert back to PIL Image (0-255 uint8) with safe range handling
     result_uint8 = (np.clip(result_array, 0.0, 1.0) * 255.0).round().astype(np.uint8)
     return Image.fromarray(result_uint8)
 
 
-def apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None):
+def apply_aspect_stroke(img, aspect_ratio, stroke_var, target_size):
     """
-    Apply aspect ratio, stroke variation, and crop/resize with margin.
+    Apply aspect ratio, stroke variation,
+    Crop/resize as needed is handled in the individual functions.
     No defaults. Everything must be specified.
     """
-    img = apply_aspect_ratio(img, aspect_ratio)
-    img = apply_stroke_variation(img, stroke_var)
-    if func is not None:
-        img = func(img)
-    # Find bounding box BEFORE noise
-    bbox = find_bounding_box(img)
-    img = crop_resize_with_margin(img, target_size, margin=margin, bbox=bbox)
+    img = apply_aspect_ratio(img, aspect_ratio, target_size)
+    img = apply_stroke_variation(img, stroke_var, target_size)
     return img
 
 
-def generate_augmented_variations(base_img, target_size, margin=2):
+def generate_augmented_variations(base_img, target_size): 
     """
     Generate all augmented variations for a base digit image.
     
@@ -470,7 +394,8 @@ def generate_augmented_variations(base_img, target_size, margin=2):
         target_size: Final image size (28 or 64)
     
     Returns:
-        List of 109 augmented PIL images (target_size x target_size with exactly 2px margin on all sides)
+        List of 109 augmented PIL images 
+        (target_size x target_size with exactly MARGIN_SIZE pixels on all sides)
     """
     variations = []
     
@@ -485,36 +410,36 @@ def generate_augmented_variations(base_img, target_size, margin=2):
         # Variation 1: ROTATION negative range
         img = base_img.copy()
         angle = np.random.uniform(*ROTATION_RANGE_NEG)
-        img = apply_rotation(img, angle)
-        img = apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
+        img = apply_rotation(img, angle, target_size=target_size)
+        img = apply_aspect_stroke(img, aspect_ratio, stroke_var, target_size)
         variations.append(img)
                 
         # Variation 2: ROTATION positive range
         img = base_img.copy()
         angle = np.random.uniform(*ROTATION_RANGE_POS)
-        img = apply_rotation(img, angle)
-        img = apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
+        img = apply_rotation(img, angle, target_size=target_size)
+        img = apply_aspect_stroke(img, aspect_ratio, stroke_var, target_size)
         variations.append(img)
         
         # Variation 3: SHEAR negative range
         img = base_img.copy() 
         shear = np.random.uniform(*SHEAR_RANGE_NEG)
-        img = apply_shear(img, shear)
-        img = apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
+        img = apply_shear(img, shear, target_size=target_size)
+        img = apply_aspect_stroke(img, aspect_ratio, stroke_var, target_size)
         variations.append(img)
 
         # Variation 4: SHEAR positive range
         img = base_img.copy() 
         shear = np.random.uniform(*SHEAR_RANGE_POS)
-        img = apply_shear(img, shear)
-        img = apply_aspect_stroke_func_crop(img, aspect_ratio, stroke_var, target_size, margin, func=None)
+        img = apply_shear(img, shear, target_size=target_size)
+        img = apply_aspect_stroke(img, aspect_ratio, stroke_var, target_size)
         variations.append(img)
             
     # Add 1 original: no rotation, no shear, no erasure, no breaks, stroke=0, aspect=1.0
     img = base_img.copy()
     # Find bounding box BEFORE noise
     bbox = find_bounding_box(img)
-    img = crop_resize_with_margin(img, target_size, margin=margin, bbox=bbox)
+    img = crop_resize_with_margin(img, target_size, bbox=bbox)
     variations.append(img)
     
     return variations

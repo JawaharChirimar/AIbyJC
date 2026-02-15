@@ -257,11 +257,11 @@ def generate_symbols(n_symbols, image_size):
         return _empty_image_batch(image_size)
 
 
-def augment_images(to_augment_images):
+def augment_images(to_augment_images, target_size):
     augmented_images = []
     for img in to_augment_images:
         distortion_index = np.random.randint(0, NUMBER_OF_AUGMENTATIONS)
-        aug_version = augment_image_by_index(img, 10, distortion_index)
+        aug_version = augment_image_by_index(img, 10, distortion_index, target_size=target_size)
         if aug_version is None:
             raise ValueError(f"Augmentation index {distortion_index} returned None for class 10")
         augmented_images.append(aug_version[0])
@@ -369,7 +369,7 @@ def create_negative_examples(target_count,
     # Sample indices instead of arrays directly
     indices = np.random.choice(len(to_augment_images), n2, replace=False)
     picked_images = [to_augment_images[i] for i in indices]
-    augmented_images = augment_images(picked_images)
+    augmented_images = augment_images(picked_images, target_size=image_size)
 
     print(f"  Picked images: {len(picked_images):,}")
     print(f"  Augmented images: {len(augmented_images):,}")
@@ -389,7 +389,7 @@ def create_negative_examples(target_count,
     print(f"\nApplying post-processing to {len(x_negative):,} negative images...")
     processed_negative = []
     for img in x_negative:
-        processed = apply_post_processing(img)
+        processed = apply_post_processing(img, target_size=image_size)
         processed_negative.append(processed)
     x_negative = np.array(processed_negative)
     

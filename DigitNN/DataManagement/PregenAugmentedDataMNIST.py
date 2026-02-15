@@ -85,10 +85,44 @@ def augment_count_for_class(OriginalCounts, augment_ratio):
     return AugmentCounts
 
 
+def calc_indices_for_augmentation_type(index_list):
+    indices_by_augmentation_type = {
+        0: [], #Rotation positive or negative
+        1: [], #Shear Negative
+        2: [], #Shear Positive
+        3: [], #Aspect narrow
+        4: []  #Aspect wide
+    }
+
+    N = len(index_list)
+    n = N // NUMBER_OF_AUGMENTATIONS
+    m = N - n*(NUMBER_OF_AUGMENTATIONS-1)
+    makeup_augmentation_type = np.random.randint(0, NUMBER_OF_AUGMENTATIONS)
+
+    # Work with list to handle duplicate indices correctly
+    remaining_indices = list(index_list)
+
+    for i in range(NUMBER_OF_AUGMENTATIONS-1):
+        count = m if i == makeup_augmentation_type else n
+        # Select random POSITIONS from remaining pool
+        selected_positions = np.random.choice(len(remaining_indices), size=count, replace=False)
+        # Get the actual indices at those positions
+        selected_indices = [remaining_indices[pos] for pos in selected_positions]
+        indices_by_augmentation_type[i] = selected_indices
+        # Remove by positions (reverse order to maintain correct indices)
+        for pos in sorted(selected_positions, reverse=True):
+            del remaining_indices[pos] 
+
+    # Last augmentation type gets whatever is left
+    indices_by_augmentation_type[NUMBER_OF_AUGMENTATIONS-1] = remaining_indices
+
+
+    return indices_by_augmentation_type
+
 def process_dataset_data(output_path, dataset_name, 
-images, labels, 
-OriginalCounts, 
-split, target_size, force, augment_ratio):
+                         images, labels, 
+                         OriginalCounts, 
+                         split, target_size, force, augment_ratio):
     """
     Process one dataset split with class-wise augmentation and save it.
     
@@ -160,7 +194,8 @@ split, target_size, force, augment_ratio):
                 
         # Randomly select images to augment
         if num_to_augment == 0:
-            indices_to_augment = []
+            print(f"  Class {class_idx}: No augmentation needed for this class.")
+            continue
         elif num_to_augment > len(class_img_list):
             print(f"Class {class_idx}: Augmented images needed ({num_to_augment}) >  Original images ({len(class_img_list)})")
             print(f"Class {class_idx}: Choosing indices with replacement to enable this.")
@@ -171,16 +206,18 @@ split, target_size, force, augment_ratio):
             indices_to_augment = np.random.choice(range(len(class_img_list)), num_to_augment, replace=False)
             
 
+        indices_for_augmentation_type = calc_indices_for_augmentation_type(indices_to_augment)
         # Generate augmented versions - collect all first
         # Note: augment_image_by_index returns 1 augmented image
         all_aug_versions = []
-        for idx in indices_to_augment:
-            img = class_img_list[idx]
-            distortion_index = np.random.randint(0, NUMBER_OF_AUGMENTATIONS)
-            aug_version = augment_image_by_index(img, class_idx, distortion_index)
-            if aug_version is None:
-                raise ValueError(f"Augmentation index {distortion_index} returned None for class {class_idx}")
-            all_aug_versions.append(aug_version)
+        for distortion_index in range(NUMBER_OF_AUGMENTATIONS):
+            idx_list = indices_for_augmentation_type[distortion_index]
+            for idx in idx_list:
+                img = class_img_list[idx]
+                aug_version = augment_image_by_index(img, class_idx, distortion_index, target_size=target_size)
+                if aug_version is None:
+                    raise ValueError(f"Augmentation index {distortion_index} returned None for class {class_idx}")
+                all_aug_versions.append(aug_version)
         
         if all_aug_versions:
             imgs, aug_labels = zip(*all_aug_versions)
@@ -203,7 +240,7 @@ split, target_size, force, augment_ratio):
     print(f"\nApplying post-processing to final images...")
     processed_images = []
     for img in all_images:
-        processed = apply_post_processing(img)
+        processed = apply_post_processing(img, target_size=target_size)
         processed_images.append(processed)
     
     all_images = np.array(processed_images)
@@ -241,6 +278,8 @@ split, target_size, force, augment_ratio):
     print(f"  Saved {len(all_images):,} images")
     print(f"  File size: {file_size:.2f} MB")
     print(f"  ✓ Complete!")
+
+    return len(all_images)
 
 
 def create_augmented_data(augment_ratio, image_size, force, datasets):
@@ -342,16 +381,18 @@ def create_augmented_data(augment_ratio, image_size, force, datasets):
     OriginalCountsTest = get_original_counts_by_class(y_test)
 
     np.random.seed(41)
-    process_dataset_data(output_path, dataset_name, 
-    x_train, y_train, 
-    OriginalCountsTrain, 
+    train_count = process_dataset_data(output_path, dataset_name,
+    x_train, y_train,
+    OriginalCountsTrain,
     'train', image_size, force, augment_ratio)
 
     np.random.seed(97)
-    process_dataset_data(output_path, dataset_name, 
-    x_test, y_test, 
-    OriginalCountsTest, 
+    test_count = process_dataset_data(output_path, dataset_name,
+    x_test, y_test,
+    OriginalCountsTest,
     'test', image_size, force, augment_ratio)
+
+    return train_count, test_count
 
 
 def main():
