@@ -18,9 +18,10 @@ from tensorflow import keras
 from tensorflow.keras import layers
 from DigitClassifierHelper import (BalancedLoss, load_digit_classifier, 
     create_logit_model, calibrate_energy_scorer_helper,
-    load_energy_caliberation_helper, classify_digit)
+    classify_digit)
 from OODDetection import (EnergyScorer, _build_logit_model, 
-    _is_softmax_model, _is_logit_model, LogitLayer)
+    _is_softmax_model, _is_logit_model, 
+    _build_energy_model_from_path, LogitLayer)
 
 # Import DATA_DIR from NonDigitGenerator (used for data paths)
 from DataManagement.NonDigitGenerator import DATA_DIR
@@ -172,16 +173,20 @@ class Softmax11DiagnosticsCallback(keras.callbacks.Callback):
         print(f"  [Per-digit] {' | '.join(per_digit_results)}")
 
 
-def calibrate_energy_scorer(classifier_model_path, model=None, input_size=28):
+def calibrate_energy_scorer(classifier_model_path, model, input_size):
     """
     Load a pre-trained digit classifier and calibrate the energy scorer.
     """
 
+    print(f" For SoftMax11 model")
+    print(f"Calibrating energy scorer for model: {classifier_model_path}...")
+    print(f"input_size: {input_size}")
+
     calibrate_energy_scorer_helper(classifier_model_path, 
-    load_augmented_data, 
-    BATCH_SIZE, 
-    model=model, 
-    input_size=input_size)
+        load_augmented_data, 
+        batch_size=BATCH_SIZE, 
+        input_size=input_size,
+        model=model)
 
 
 def load_digit_classifier_and_energy_scorer(classifier_model_path, input_size=64):
@@ -193,19 +198,10 @@ def load_digit_classifier_and_energy_scorer(classifier_model_path, input_size=64
         input_size: Image size for calibration if needed (default: 64)
     """
     model = load_digit_classifier(classifier_model_path)
-    if _is_softmax_model(model):
-        raise ValueError(f"load_digit_classifier_and_energy_scorer: Model is softmax, not supported. Use LogitModel instead.")
-
-    energy_scorer = EnergyScorer(model)    
-    
-    calibration_file = energy_scorer.calibration_file_name_from_model_path(classifier_model_path)
-    retVal = load_energy_caliberation_helper(calibration_file, energy_scorer)
-    if retVal == -1:
-        print("No energy scorer calibration file found - doing calibration now...")
-        calibrate_energy_scorer(classifier_model_path, model=model, input_size=input_size)
-        retVal = load_energy_caliberation_helper(calibration_file, energy_scorer)
-        if retVal == -1:
-            raise ValueError(f"load_digit_classifier_and_energy_scorer: Could not load energy scorer calibration after creating it")  
+    energy_scorer = _build_energy_model_from_path(model, 
+    batch_size=BATCH_SIZE,
+    classifier_model_path=classifier_model_path, 
+    percentile=99.5)
 
     return model, energy_scorer
 
@@ -574,7 +570,7 @@ def main():
         print(f"Starting energy model calibration...")
         print(f"Trained classifier model path: {args.model_path}")
         print(f"Input image size: {input_size}x{input_size}")
-        calibrate_energy_scorer(args.model_path, input_size=input_size)
+        calibrate_energy_scorer(args.model_path, model=None, input_size=input_size)
         return 1
 
     if args.create_logit_model:

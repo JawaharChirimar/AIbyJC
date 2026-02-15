@@ -5,34 +5,19 @@ OODDetection.py
 Out-of-Distribution detection using signals from the existing CNN classifier.
 No new model training required — extracts OOD scores from the trained model.
 
-Two methods:
-1. Energy Score — uses raw logits (pre-softmax), better than max softmax probability
-2. Mahalanobis Distance — uses penultimate dense layer features (96-dim)
+Energy Score — uses raw logits (pre-softmax), better than max softmax probability
 
 Usage:
-    from OODDetection import EnergyScorer, MahalanobisScorer
+    from OODDetection import EnergyScorer
 
     # --- Energy Score (zero setup) ---
     energy = EnergyScorer(model)
     score = energy.score(image)            # single image
     is_ood = energy.is_ood(image)          # True/False with default threshold
     scores = energy.score_batch(images)    # batch
-
-    # --- Mahalanobis Distance (requires fitting on training data) ---
-    maha = MahalanobisScorer(model)
-    maha.fit(x_train, y_train)             # one-time: compute class means + covariance
-    maha.save("maha_params.npz")           # save so you don't refit every time
-    maha.load("maha_params.npz")           # load previously fitted params
-    score = maha.score(image)              # single image
-    scores = maha.score_batch(images)      # batch
-
-    # --- Combined scoring ---
-    combined = CombinedOODScorer(model, maha_params_path="maha_params.npz")
-    result = combined.classify(image)
-    # returns: {"class": 7, "confidence": 0.98, "energy": -12.3,
-    #           "mahalanobis": 4.2, "is_ood": False}
 """
 
+import os
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -172,49 +157,22 @@ def _build_logit_model(model):
     
     return logit_model
 
-def _build_energy_model_from_path(model,classifier_model_path):
-    _energy_scorer = EnergyScorer(model)
+def _build_energy_model_from_path(model, 
+batch_size, classifier_model_path, percentile):
+    _energy_scorer = EnergyScorer(model, batch_size)
+        
+    if _is_softmax_model(model):
+        raise ValueError(f"_build_energy_model_from_path: Model is softmax. Use LogitModel instead. {classifier_model_path}")
+
     calibration_file = _energy_scorer.calibration_file_name_from_model_path(classifier_model_path)
     if os.path.exists(calibration_file):
         print("Loading energy scorer calibration for model...")
-        try:
-            _energy_scorer.load_calibration(calibration_file, percentile=99.9)
-            _calibration_data_loaded = True
-        except Exception as e:
-            print(f"Warning: Could not load calibration: {e}")
+        _energy_scorer.load_calibration(calibration_file, percentile=percentile)
     else:
-        print("OODDetection: No calibration file found - calibration will need to be done separately")
+        print(f"OODDetection: No calibration file found for model {classifier_model_path} - calibration will need to be done separately")
+        raise ValueError(f"OODDetection: No calibration file found for model {classifier_model_path} - calibration will need to be done separately")
     
     return _energy_scorer
-
-def _build_feature_model(model):
-    """
-    Build a model that outputs the penultimate dense layer features.
-    
-    Extracts the output of Dense(N, activation='elu') — the N-dim
-    feature vector before BatchNorm/Dropout/final Dense.
-    
-    This is the representation your CNN learned for classification.
-    """
-    # Find the penultimate Dense layer (second-to-last Dense layer)
-    # Skip the first Dense we find (output layer), take the second one
-    penultimate_dense = None
-    dense_count = 0
-    for layer in reversed(model.layers):
-        if isinstance(layer, keras.layers.Dense):
-            dense_count += 1
-            if dense_count == 2:  # Second Dense from the end
-                penultimate_dense = layer
-                break
-    
-    if penultimate_dense is None:
-        raise ValueError("Could not find penultimate Dense layer in model")
-    
-    feature_model = keras.Model(
-        inputs=model.input,
-        outputs=penultimate_dense.output
-    )
-    return feature_model
 
 
 # =============================================================================
@@ -236,7 +194,7 @@ class EnergyScorer:
     Temperature T can sharpen the separation (default T=1).
     """
     
-    def __init__(self, model, temperature=1.0, batch_size=128):
+    def __init__(self, model,  batch_size, temperature=1.0):
         """
         Args:
             model: Your trained Keras classifier (softmax or logit output)
@@ -304,14 +262,6 @@ class EnergyScorer:
         logits = self._get_logits(images)
         return self._compute_energy(logits)
     
-    def set_threshold(self, threshold):
-        """
-        Manually set the energy threshold.
-        
-        Args:
-            threshold: Energy threshold value. Images with energy > threshold are OOD.
-        """
-        self._threshold = threshold
     
     def is_ood(self, image, threshold=None):
         """
@@ -330,7 +280,7 @@ class EnergyScorer:
             raise ValueError("No threshold set. Call calibrate() first or pass threshold=")
         return self.score(image) > thresh
     
-    def calibrate(self, x_digits, percentile=[95]):
+    def calibrate(self, x_digits, percentile):
         """
         Calibrate the energy threshold using labeled data.
         
@@ -339,7 +289,7 @@ class EnergyScorer:
         Args:
             x_digits: Array of known digit images (shape: N, H, W, 1)
             percentile: What % of digits should be accepted. 
-            An array of numbers where 1 < x < 99.99 (default [95])
+            An array of numbers where 1 < x < 99.99
         
         Returns:
             returns array of thresholds corresponding to each percentile
@@ -378,12 +328,12 @@ class EnergyScorer:
         energy_file_path = model_path.parent / f"energy_{base_name}_calibrate.json"
         return str(energy_file_path)
     
-    def load_calibration(self, calibration_file, percentile=99.9):
+    def load_calibration(self, calibration_file, percentile):
         """Load energy scorer calibration for model at model_path.
         threshold in the calibration file is a dictionary of percentiles and thresholds.
         Read from it the threshold for given percentile 
         and set it as the threshold for the energy scorer.
-        If input percentile is not in the calibration file, use default value of 99.9."""
+        If input percentile is not in the calibration file, use 99.9 as default."""
 
         print(f"Loading energy scorer calibration from: {calibration_file}")
 
@@ -420,334 +370,6 @@ class EnergyScorer:
         return img
 
 
-# =============================================================================
-# METHOD 2: Mahalanobis Distance
-# =============================================================================
-
-class MahalanobisScorer:
-    """
-    Mahalanobis distance-based OOD detection (Lee et al., NeurIPS 2018).
-    
-    Uses the penultimate dense layer features (96-dim) from your CNN.
-    
-    Setup (one-time):
-        1. Run all training data through the CNN
-        2. Extract 96-dim features from penultimate dense layer
-        3. Compute per-class mean vectors (11 means, each 96-dim)
-        4. Compute shared covariance matrix (96 x 96)
-    
-    At inference:
-        1. Extract 96-dim feature for test image
-        2. Compute Mahalanobis distance to each class centroid
-        3. Return minimum distance (closest class)
-    
-    - In-distribution: SMALL distance (close to some class centroid)
-    - Out-of-distribution: LARGE distance (far from all centroids)
-    """
-    
-    def __init__(self, model):
-        """
-        Args:
-            model: Your trained Keras classifier
-        """
-        self.model = model
-        self.feature_model = _build_feature_model(model)
-        self.feature_dim = self.feature_model.output_shape[-1]
-        
-        # Parameters (set by fit() or load())
-        self.class_means = None      # shape: (num_classes, feature_dim)
-        self.precision_matrix = None  # shape: (feature_dim, feature_dim) — inverse covariance
-        self.num_classes = None
-        self._threshold = None
-    
-    def fit(self, x_train, y_train, batch_size=256):
-        """
-        Compute class means and shared covariance from training data.
-        
-        This is the expensive step — run once, then save with save().
-        
-        Args:
-            x_train: Training images, shape (N, H, W, 1), float32 [0, 1]
-            y_train: Training labels, shape (N,), int
-            batch_size: Batch size for feature extraction
-        """
-        print(f"Fitting Mahalanobis parameters on {len(x_train):,} samples...")
-        
-        # Extract features for all training data
-        print(f"  Extracting {self.feature_dim}-dim features...")
-        features = self.feature_model.predict(x_train, batch_size=batch_size, verbose=1)
-        
-        classes = np.unique(y_train)
-        self.num_classes = len(classes)
-        print(f"  Found {self.num_classes} classes: {classes}")
-        
-        # Compute per-class means
-        self.class_means = np.zeros((self.num_classes, self.feature_dim))
-        for i, c in enumerate(classes):
-            mask = y_train == c
-            self.class_means[i] = np.mean(features[mask], axis=0)
-            print(f"    Class {c}: {np.sum(mask):,} samples, "
-                  f"mean norm = {np.linalg.norm(self.class_means[i]):.4f}")
-        
-        # Compute shared covariance (tied covariance across all classes)
-        print(f"  Computing shared covariance matrix ({self.feature_dim}x{self.feature_dim})...")
-        centered = np.zeros_like(features)
-        for i, c in enumerate(classes):
-            mask = y_train == c
-            centered[mask] = features[mask] - self.class_means[i]
-        
-        covariance = np.cov(centered.T)
-        
-        # Add small regularization for numerical stability
-        covariance += np.eye(self.feature_dim) * 1e-6
-        
-        # Compute precision matrix (inverse covariance) — needed for Mahalanobis distance
-        self.precision_matrix = np.linalg.inv(covariance)
-        
-        print(f"  Done. Covariance condition number: {np.linalg.cond(covariance):.2f}")
-        print(f"  Mahalanobis parameters ready.")
-    
-    def save(self, path):
-        """Save fitted parameters to .npz file."""
-        if self.class_means is None:
-            raise ValueError("No parameters to save. Call fit() first.")
-        np.savez(path,
-                 class_means=self.class_means,
-                 precision_matrix=self.precision_matrix,
-                 num_classes=self.num_classes)
-        print(f"Mahalanobis parameters saved to: {path}")
-    
-    def load(self, path):
-        """Load previously fitted parameters from .npz file."""
-        data = np.load(path)
-        self.class_means = data['class_means']
-        self.precision_matrix = data['precision_matrix']
-        self.num_classes = int(data['num_classes'])
-        print(f"Mahalanobis parameters loaded from: {path}")
-        print(f"  Classes: {self.num_classes}, Feature dim: {self.class_means.shape[1]}")
-    
-    def _compute_mahalanobis(self, features):
-        """
-        Compute minimum Mahalanobis distance to any class centroid.
-        
-        For each sample, computes:
-            d_c = (f - μ_c)^T Σ^{-1} (f - μ_c)    for each class c
-            score = min_c(d_c)
-        
-        Args:
-            features: Array of shape (N, feature_dim)
-        
-        Returns:
-            Array of shape (N,) — minimum Mahalanobis distance per sample
-        """
-        n_samples = features.shape[0]
-        distances = np.zeros((n_samples, self.num_classes))
-        
-        for c in range(self.num_classes):
-            diff = features - self.class_means[c]  # (N, D)
-            # Mahalanobis: d = diff @ precision @ diff.T (per sample)
-            left = diff @ self.precision_matrix  # (N, D)
-            distances[:, c] = np.sum(left * diff, axis=1)  # (N,)
-        
-        # Return minimum distance (closest class)
-        return np.min(distances, axis=1)
-    
-    def score(self, image):
-        """
-        Compute Mahalanobis distance for a single image.
-        
-        Returns:
-            float: Min Mahalanobis distance. Larger = more likely OOD.
-        """
-        if self.class_means is None:
-            raise ValueError("Parameters not fitted. Call fit() or load() first.")
-        
-        img = self._prepare_input(image)
-        features = self.feature_model.predict(img, verbose=0)
-        return float(self._compute_mahalanobis(features)[0])
-    
-    def score_batch(self, images, batch_size=256):
-        """
-        Compute Mahalanobis distances for a batch of images.
-        
-        Returns:
-            numpy array of distances, shape (N,)
-        """
-        if self.class_means is None:
-            raise ValueError("Parameters not fitted. Call fit() or load() first.")
-        
-        features = self.feature_model.predict(images, batch_size=batch_size, verbose=0)
-        return self._compute_mahalanobis(features)
-    
-    def calibrate(self, x_digits, x_nondigits=None, percentile=95):
-        """
-        Calibrate threshold using labeled data.
-        
-        Args:
-            x_digits: Known digit images
-            x_nondigits: Optional known non-digit images
-            percentile: What % of digits to accept (default 95)
-        """
-        digit_distances = self.score_batch(x_digits)
-        self._threshold = np.percentile(digit_distances, percentile)
-        
-        print(f"Mahalanobis threshold at {percentile}th percentile: {self._threshold:.4f}")
-        print(f"  Digit distances: mean={np.mean(digit_distances):.4f}, "
-              f"std={np.std(digit_distances):.4f}")
-        
-        if x_nondigits is not None and len(x_nondigits) > 0:
-            nondigit_distances = self.score_batch(x_nondigits)
-            rejection_rate = np.mean(nondigit_distances > self._threshold) * 100
-            print(f"  Non-digit distances: mean={np.mean(nondigit_distances):.4f}")
-            print(f"  Non-digit rejection rate: {rejection_rate:.1f}%")
-        
-        return self._threshold
-    
-    def is_ood(self, image, threshold=None):
-        """Check if image is OOD based on Mahalanobis distance."""
-        thresh = threshold or self._threshold
-        if thresh is None:
-            raise ValueError("No threshold set. Call calibrate() first or pass threshold=")
-        return self.score(image) > thresh
-    
-    def _prepare_input(self, image):
-        """Reshape single image to (1, H, W, 1) batch."""
-        img = np.array(image, dtype=np.float32)
-        if img.ndim == 2:
-            img = img.reshape(1, img.shape[0], img.shape[1], 1)
-        elif img.ndim == 3:
-            img = img.reshape(1, *img.shape)
-        return img
-
-
-# =============================================================================
-# COMBINED: Use both methods together
-# =============================================================================
-
-class CombinedOODScorer:
-    """
-    Combines Energy Score + Mahalanobis Distance + existing softmax confidence.
-    
-    Three independent OOD signals from one model:
-    1. Softmax confidence (what you already have)
-    2. Energy score (better version of #1)
-    3. Mahalanobis distance (feature-space distance)
-    
-    An image is flagged as OOD if ANY signal exceeds its threshold.
-    """
-    
-    def __init__(self, model, maha_params_path=None, energy_temperature=1.0):
-        """
-        Args:
-            model: Your trained Keras classifier
-            maha_params_path: Path to saved Mahalanobis params (.npz).
-                              If None, Mahalanobis scoring is disabled.
-            energy_temperature: Temperature for energy score (default 1.0)
-        """
-        self.model = model
-        self.energy_scorer = EnergyScorer(model, temperature=energy_temperature)
-        
-        self.maha_scorer = None
-        if maha_params_path is not None:
-            self.maha_scorer = MahalanobisScorer(model)
-            self.maha_scorer.load(maha_params_path)
-        
-        # Default thresholds (set via calibrate())
-        self.energy_threshold = None
-        self.maha_threshold = None
-        self.softmax_threshold = 0.5  # your existing confidence threshold
-    
-    def classify(self, image, input_size=28):
-        """
-        Full classification with OOD detection.
-        
-        Args:
-            image: Preprocessed image (H, W) or (H, W, 1), float32 [0, 1]
-            input_size: Expected image size
-        
-        Returns:
-            dict with keys:
-                - "class": predicted digit (0-9) or 10 (non-digit)
-                - "confidence": softmax probability of predicted class
-                - "energy": energy score (more negative = more likely digit)
-                - "mahalanobis": Mahalanobis distance (smaller = more likely digit), or None
-                - "is_ood_energy": True if energy says OOD
-                - "is_ood_maha": True if Mahalanobis says OOD, or None
-                - "is_ood_softmax": True if softmax confidence says OOD
-                - "is_ood": True if ANY method flags OOD
-        """
-        img = np.array(image, dtype=np.float32)
-        if img.ndim == 2:
-            img_batch = img.reshape(1, img.shape[0], img.shape[1], 1)
-        elif img.ndim == 3:
-            img_batch = img.reshape(1, *img.shape)
-        else:
-            img_batch = img
-        
-        # Softmax prediction (existing behavior)
-        predictions = self.model.predict(img_batch, verbose=0)
-        predicted_class = int(np.argmax(predictions[0]))
-        confidence = float(predictions[0][predicted_class])
-        
-        # Energy score
-        energy = self.energy_scorer.score(img_batch)
-        
-        # Mahalanobis distance
-        maha = None
-        if self.maha_scorer is not None:
-            maha = self.maha_scorer.score(img_batch)
-        
-        # OOD decisions
-        is_ood_softmax = (predicted_class == 10) or (confidence < self.softmax_threshold)
-        is_ood_energy = (self.energy_threshold is not None and energy > self.energy_threshold)
-        is_ood_maha = None
-        if maha is not None and self.maha_threshold is not None:
-            is_ood_maha = maha > self.maha_threshold
-        
-        # Combined: OOD if ANY signal flags it
-        is_ood = is_ood_softmax or is_ood_energy
-        if is_ood_maha is not None:
-            is_ood = is_ood or is_ood_maha
-        
-        return {
-            "class": predicted_class,
-            "confidence": confidence,
-            "energy": energy,
-            "mahalanobis": maha,
-            "is_ood_softmax": is_ood_softmax,
-            "is_ood_energy": is_ood_energy,
-            "is_ood_maha": is_ood_maha,
-            "is_ood": is_ood,
-        }
-    
-    def calibrate(self, x_digits, x_nondigits=None, percentile=95):
-        """
-        Calibrate all thresholds at once.
-        
-        Args:
-            x_digits: Known digit images (N, H, W, 1)
-            x_nondigits: Known non-digit images (optional)
-            percentile: Acceptance rate for digits
-        """
-        print("=" * 60)
-        print("Calibrating OOD detection thresholds")
-        print("=" * 60)
-        
-        print("\n--- Energy Score ---")
-        self.energy_threshold = self.energy_scorer.calibrate(
-            x_digits, percentile)
-        
-        if self.maha_scorer is not None:
-            print("\n--- Mahalanobis Distance ---")
-            self.maha_threshold = self.maha_scorer.calibrate(
-                x_digits, x_nondigits, percentile)
-        
-        print("\n--- Thresholds ---")
-        print(f"  Softmax confidence: < {self.softmax_threshold}")
-        print(f"  Energy: > {self.energy_threshold:.4f}")
-        if self.maha_threshold is not None:
-            print(f"  Mahalanobis: > {self.maha_threshold:.4f}")
-
 
 # =============================================================================
 # STANDALONE: Quick test script
@@ -755,14 +377,14 @@ class CombinedOODScorer:
 
 if __name__ == "__main__":
     import argparse
-    import os
     
     parser = argparse.ArgumentParser(description="Test OOD detection on trained model")
-    parser.add_argument("--model", type=str, required=True, help="Path to trained .keras model")
-    parser.add_argument("--image-dir", type=str, default=None, help="Directory of test images")
-    parser.add_argument("--fit-maha", action="store_true", help="Fit Mahalanobis params on training data")
-    parser.add_argument("--maha-params", type=str, default=None, help="Path to saved Mahalanobis .npz")
-    parser.add_argument("--size", type=int, default=28, help="Input image size (28 or 64)")
+    parser.add_argument("--model", type=str, required=True, 
+        help="Path to trained .keras model")
+    parser.add_argument("--image-dir", type=str, default=None, 
+    help="Directory of test images")
+    parser.add_argument("--size", type=int, default=64, 
+    help="Input image size (28 or 64)")
     args = parser.parse_args()
         
     # Load model - determine which module to use based on model path
@@ -772,40 +394,16 @@ if __name__ == "__main__":
     elif 'run_EMNIST' in model_path_str:
         from DigitClassifierSoftMax11 import BalancedLoss
     else:
-        # Default to SoftMax11 if pattern doesn't match
-        from DigitClassifierSoftMax11 import BalancedLoss
-    
+        raise ValueError(f"OODDetection: Invalid model path: {model_path_str}. Must be one of: run_MNIST*, run_EMNIST*")
+
     model = keras.models.load_model(
         args.model, custom_objects={'BalancedLoss': BalancedLoss})
     print(f"Model loaded: {args.model}")
     
     # Energy scorer — always available
-    energy = EnergyScorer(model)
+    energy = EnergyScorer(model, batch_size)
     print(f"Energy scorer ready")
-    
-    # Mahalanobis — fit or load
-    if args.fit_maha:
-        from DataManagement.PregenAugmentedData import load_augmented_data
-        x_train, y_train, x_test, y_test = load_augmented_data(image_size=args.size)
         
-        maha = MahalanobisScorer(model)
-        maha.fit(x_train, y_train)
-        
-        save_path = os.path.splitext(args.model)[0] + "_maha_params.npz"
-        maha.save(save_path)
-        
-        # Calibrate both
-        digit_mask = y_test < 10
-        nondigit_mask = y_test == 10
-        
-        print("\n--- Calibration ---")
-        energy.calibrate(x_test[digit_mask])
-        maha.calibrate(x_test[digit_mask], x_test[nondigit_mask])
-    
-    elif args.maha_params:
-        maha = MahalanobisScorer(model)
-        maha.load(args.maha_params)
-    
     # Test on images if provided
     if args.image_dir:
         import cv2
@@ -832,8 +430,4 @@ if __name__ == "__main__":
             # Energy
             e = energy.score(img_batch)
             
-            # Mahalanobis
-            m = maha.score(img_batch) if (args.fit_maha or args.maha_params) else None
-            
-            m_str = f"  maha={m:.2f}" if m is not None else ""
-            print(f"{fname:30s}  class={pred_class:2d}  conf={conf:.4f}  energy={e:.4f}{m_str}")
+            print(f"{fname:30s}  class={pred_class:2d}  conf={conf:.4f}  energy={e:.4f}")

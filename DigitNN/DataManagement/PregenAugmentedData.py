@@ -46,7 +46,7 @@ def load_helper(data_path,dataset_name,image_size,x_list,y_list,dataset_names):
         print(f"  Warning: {dataset_name} not found at {data_path}")
 
 
-def load_augmented_data(image_size=28):
+def load_augmented_data(image_size):
     """
     Load and combine all augmented training and test datasets from separate files.
     
@@ -66,7 +66,7 @@ def load_augmented_data(image_size=28):
     - Non-digits: non_digits_test_augmented_{size}x{size}.npz
     
     Args:
-        image_size: Image size (28 or 64, default: 28)
+        image_size: Image size (28 or 64)
     
     Returns:
         Tuple of (x_train, y_train, x_test, y_test) or (None, None, None, None) if no data found
@@ -118,24 +118,13 @@ def load_augmented_data(image_size=28):
     
     if len(train_x_list) == 0:
         print("\nERROR: No training datasets found!")
-        print(f"Generate augmented data with:")
-        print(f"  python3 DataManagement/PregenAugmentedEMNIST.py --size {image_size}")
-        print(f"  python3 DataManagement/PregenAugmentedArdis.py --size {image_size}")
-        print(f"  python3 DataManagement/PregenAugmentedUSPS.py --size {image_size}")
-        print(f"  python3 DataManagement/PregenGoogleFonts.py --size {image_size} --api-key YOUR_KEY")
-        print(f"  python3 DataManagement/PregenNonDigits.py --size {image_size}")
+        print(f"Generate augmented training data first.")
         return None, None, None, None
 
     if len(test_x_list) == 0:
         print("\nERROR: No testing datasets found!")
-        print(f"Generate augmented test data with:")
-        print(f"  python3 DataManagement/PregenAugmentedEMNIST.py --size {image_size}")
-        print(f"  python3 DataManagement/PregenAugmentedArdis.py --size {image_size} ")
-        print(f"  python3 DataManagement/PregenAugmentedUSPS.py --size {image_size}")
-        print(f"  python3 DataManagement/PregenGoogleFonts.py --size {image_size} --api-key YOUR_KEY")
-        print(f"  python3 DataManagement/PregenNonDigits.py --size {image_size}")
+        print(f"Generate augmented test data first.")
         return None, None, None, None
-
     
     # Combine all datasets
     x_train = np.concatenate(train_x_list, axis=0)

@@ -31,15 +31,16 @@ Output:
     - font_digits_test_augmented_{size}x{size}.npz: x (N, size, size, 1), y (N,) integer labels
 """
 
-import os
-import sys
-import random
 import argparse
-import requests
-from pathlib import Path
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+import os
+import random
+import sys
 import tempfile
+from pathlib import Path
+
+import numpy as np
+import requests
+from PIL import Image, ImageDraw, ImageFont
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))

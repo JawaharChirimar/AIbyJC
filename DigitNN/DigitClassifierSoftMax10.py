@@ -18,15 +18,12 @@ from tensorflow import keras
 from tensorflow.keras import layers
 from DigitClassifierHelper import (BalancedLoss, load_digit_classifier, 
     create_logit_model, calibrate_energy_scorer_helper,
-    load_energy_caliberation_helper, classify_digit)
+    classify_digit)
 from OODDetection import (EnergyScorer, _build_logit_model, 
-    _is_softmax_model, _is_logit_model, LogitLayer)    
+    _is_softmax_model, _is_logit_model, _build_energy_model_from_path, 
+    LogitLayer)    
 
 # Import augmentation module
-from DataManagement.DataAugmentation import (
-    upscale_to_64x64,
-    batch_upscale_to_64x64
-)
 from StratifiedBatchGenerator import create_stratified_batch_generator
 
 # Data directory
@@ -39,35 +36,34 @@ else:
 # =============================================================================
 # CONFIGURABLE CONSTANTS
 # =============================================================================
-DROPOUT_RATE = 0.25          # Dropout rate in model (prevents overfitting)
+
 BATCH_SIZE = 64             # Batch size for training
 
 
-def create_digit_classifier_model(input_size=28, use_balanced_loss=False, 
-lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=32):
+def create_digit_classifier_model(input_size, use_balanced_loss, 
+lambda_weight, learning_rate, neurons_in_dense_layer, use_combined):
     """
     Create a CNN model for digit classification with 10 classes (digits 0-9 only).
     
-    Uses deep model architecture with 4 conv layers, optimized for input_size x input_size images.
+    Uses deep model architecture with 3 or 4 conv layers, optimized for input_size x input_size images.
     Always uses softmax activation.
     
     Args:
-        input_size: Image size (28 or 64, default: 28)
-        use_balanced_loss: Use BalancedLoss instead of cross-entropy (default: False)
-        lambda_weight: Variance penalty weight for BalancedLoss (default: 0.5)
-        learning_rate: Learning rate for Adam optimizer (default: 0.001)
-        neurons_in_dense_layer: Number of neurons in final dense layer (default: 32)
+        input_size: Image size (28 or 64)
+        use_balanced_loss: Use BalancedLoss instead of cross-entropy
+        lambda_weight: Variance penalty weight for BalancedLoss
+        learning_rate: Learning rate for Adam optimizer
+        neurons_in_dense_layer: Number of neurons in final dense layer
+        use_combined: if true 4 conv layers, if false 3 conv layers
     
     Returns:
         Compiled Keras model
     """
     # Model capacity for large dataset (90K to 120K samples)
     number_convolution_channels = 32
-    number_convolution_channelsF = 64 
-    
-    # Always use softmax with 10 classes (0-9 digits only)
-    output_activation = 'softmax'
-    
+    number_convolution_channelsF = 64
+    dropout_rate = 0.25
+        
     # Choose loss function
     if use_balanced_loss:
         loss_function = BalancedLoss(num_classes=10, var_penalty=lambda_weight)
@@ -78,29 +74,39 @@ lambda_weight=0.5, learning_rate=0.001, neurons_in_dense_layer=32):
     
     # Deep model architecture (3 conv layers) for input_size x input_size input
     #conv(number_convolution_channels) → BN → pool(2,2) → 
-    #conv(number_convolution_channels) → BN → pool(2,2) → dropout(0.25) → 
+    #conv(number_convolution_channelsF) → BN → pool(2,2) → dropout(0.25) → 
     #conv(number_convolution_channelsF) → BN → pool(2,2) → dropout(0.25) → 
     #flatten → dense(neurons_in_dense_layer) → BN → dropout(0.5) → dense(10) 
-    model = keras.Sequential([
+    model_layers = [
         layers.Input(shape=(input_size, input_size, 1)),
+    ]
+
+    if use_combined:
+        model_layers.extend([
+            layers.Conv2D(number_convolution_channels, (3, 3), activation='elu'),
+            layers.BatchNormalization(),
+        ])
+
+    model_layers.extend([
         layers.Conv2D(number_convolution_channels, (3, 3), activation='elu'),
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
-        layers.Conv2D(number_convolution_channels, (3, 3), activation='elu'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
-        layers.Dropout(0.25),
         layers.Conv2D(number_convolution_channelsF, (3, 3), activation='elu'),
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
-        layers.Dropout(0.25),
+        layers.Dropout(dropout_rate),
+        layers.Conv2D(number_convolution_channelsF, (3, 3), activation='elu'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2, 2)), 
+        layers.Dropout(dropout_rate),
         layers.Flatten(),
         layers.Dense(neurons_in_dense_layer, activation='elu'),
         layers.BatchNormalization(),
-        layers.Dropout(DROPOUT_RATE),
+        layers.Dropout(dropout_rate),
         layers.Dense(10)  # 10 classes: digits 0-9 only
-        #layers.Dense(10, activation=output_activation)
     ])
+
+    model = keras.Sequential(model_layers)
     
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
@@ -117,7 +123,7 @@ class Softmax10DiagnosticsCallback(keras.callbacks.Callback):
     Callback to print per-epoch diagnostics for softmax 10-class mode.
     Shows per-digit accuracy (0-9) and computes balanced score metric.
     """
-    def __init__(self, x_val, y_val, lambda_weight=0.5):
+    def __init__(self, x_val, y_val, lambda_weight):
         super().__init__()
         self.x_val = x_val
         self.y_val = y_val
@@ -169,15 +175,15 @@ class Softmax10DiagnosticsCallback(keras.callbacks.Callback):
             print(f"  [Softmax10] Overall: {overall_acc:.1f}% | Per-digit: {' | '.join(results)}")
 
 
-def load_dataset_from_npz(file_path, input_size, label_key='y_softmax', dataset_name=None):
+def load_dataset_from_npz(file_path, input_size, label_key, dataset_name):
     """
     Helper function to load a dataset from an npz file.
     
     Args:
         file_path: Path to the .npz file
         input_size: Expected image size (28 or 64)
-        label_key: Key for labels in npz file ('y_softmax' or 'y', default: 'y_softmax')
-        dataset_name: Name of dataset for error messages (optional)
+        label_key: Key for labels in npz file (e.g. 'y')
+        dataset_name: Name of dataset for error messages
     
     Returns:
         Tuple of (x_data, y_data)
@@ -229,12 +235,15 @@ def load_augmented_data(image_size, use_combined):
         dataset = "mnist"
     augmented_train_path = DATA_DIR / "augmented" / f"{dataset}_train_augmented_{image_size}x{image_size}.npz"
     augmented_test_path = DATA_DIR / "augmented" / f"{dataset}_test_augmented_{image_size}x{image_size}.npz"
-    x_train, y_train = load_dataset_from_npz(augmented_train_path, image_size, 'y_softmax', 'augmented train')
-    x_test, y_test = load_dataset_from_npz(augmented_test_path, image_size, 'y_softmax', 'augmented test')
+    x_train, y_train = load_dataset_from_npz(augmented_train_path, image_size, 'y', 'augmented train')
+    x_test, y_test = load_dataset_from_npz(augmented_test_path, image_size, 'y', 'augmented test')
     return x_train, y_train, x_test, y_test
 
 
-def calibrate_energy_scorer(classifier_model_path, input_size, use_combined, model=None):
+def calibrate_energy_scorer(classifier_model_path, 
+    input_size, 
+    use_combined, 
+    model):
     """
     Load a pre-trained digit classifier and calibrate the energy scorer.
     """
@@ -242,44 +251,37 @@ def calibrate_energy_scorer(classifier_model_path, input_size, use_combined, mod
     def load_augmented_dataX(image_size):
         return load_augmented_data(image_size, use_combined)
 
+    print(f" For SoftMax11 model")
     print(f"Calibrating energy scorer for model: {classifier_model_path}...")
     print(f"input_size: {input_size}")
     print(f"use_combined: {use_combined}")
+    
     calibrate_energy_scorer_helper(classifier_model_path, 
-    load_augmented_dataX, 
-    BATCH_SIZE, 
-    input_size=input_size,
-    model=model)
+        load_augmented_dataX, 
+        batch_size=BATCH_SIZE, 
+        input_size=input_size,
+        model=model)
 
 
-def load_digit_classifier_and_energy_scorer(classifier_model_path, input_size=64):
+def load_digit_classifier_and_energy_scorer(classifier_model_path, 
+input_size):
     """
     Load a pre-trained digit classifier and energy scorer.
     
     Args:
         classifier_model_path: Path to the model file
-        input_size: Image size for calibration if needed (default: 64)
+        input_size: Image size for calibration if needed
     """
     model = load_digit_classifier(classifier_model_path)
-    if _is_softmax_model(model):
-        raise ValueError(f"load_digit_classifier_and_energy_scorer: Model is softmax, not supported. Use LogitModel instead.")
-
-    energy_scorer = EnergyScorer(model)    
-    
-    calibration_file = energy_scorer.calibration_file_name_from_model_path(classifier_model_path)
-    retVal = load_energy_caliberation_helper(calibration_file, energy_scorer)
-    if retVal == -1:
-        print("xxNo energy scorer calibration file found - doing calibration now...")
-        calibrate_energy_scorer(classifier_model_path, model=model, input_size=input_size, use_combined=use_combined)
-        retVal = load_energy_caliberation_helper(calibration_file, energy_scorer)
-        if retVal == -1:
-            raise ValueError(f"xxload_digit_classifier_and_energy_scorer: Could not load energy scorer calibration after creating it")  
+    energy_scorer = _build_energy_model_from_path(model, 
+    batch_size=BATCH_SIZE,
+    classifier_model_path, percentile=99.5)
 
     return model, energy_scorer
 
 
 def _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
-learning_rate, neurons_in_dense_layer):
+learning_rate, neurons_in_dense_layer, use_combined):
     print(f"Creating new digit classifier model for 10 classes (digits 0-9 only)...")
     print(f"  Input ({input_size}x{input_size} input.")
     if use_balanced_loss:
@@ -288,13 +290,15 @@ learning_rate, neurons_in_dense_layer):
         print(f"  Loss: cross-entropy")
     print(f"  Learning rate: {learning_rate}")
     print(f"  Dense layer neurons: {neurons_in_dense_layer}")
+    print(f"  Use combined: {use_combined}")
     
     model = create_digit_classifier_model(
     input_size=input_size, 
     use_balanced_loss=use_balanced_loss, 
     lambda_weight=lambda_weight, 
     learning_rate=learning_rate, 
-    neurons_in_dense_layer=neurons_in_dense_layer)
+    neurons_in_dense_layer=neurons_in_dense_layer,
+    use_combined=use_combined)
 
     return model
 
@@ -366,15 +370,15 @@ def train_digit_classifier(
                 print(f"  Warning: Could not load initial model: {e}")
                 print(f"  Creating new model instead...")
                 model = _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
-                learning_rate, neurons_in_dense_layer)
+                learning_rate, neurons_in_dense_layer, use_combined)
         else:
             print(f"Initial model path provided but file not found: {initial_model_path}")
             print(f"  Creating new model instead...")
             model = _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
-            learning_rate, neurons_in_dense_layer)
+            learning_rate, neurons_in_dense_layer, use_combined)
     else:
         model = _new_model_with_banner(input_size, use_balanced_loss, lambda_weight, 
-        learning_rate, neurons_in_dense_layer)
+        learning_rate, neurons_in_dense_layer, use_combined)
         
     try:
         # =====================================================================
@@ -636,7 +640,10 @@ def main():
         print(f"Starting energy model calibration...")
         print(f"Trained classifier model path: {args.model_path}")
         print(f"Input image size: {input_size}x{input_size}")
-        calibrate_energy_scorer(args.model_path, input_size, args.combined)
+        calibrate_energy_scorer(args.model_path, 
+        input_size=input_size, 
+        use_combined=args.combined, 
+        model=None)
         return 1
 
     if args.create_logit_model:

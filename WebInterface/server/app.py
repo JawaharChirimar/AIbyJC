@@ -21,7 +21,7 @@ CORS(app)  # Enable CORS for frontend
 
 # Base directory for models
 MODELS_BASE_DIR = Path(__file__).parent.parent.parent / "DigitNN" / "data" / "modelForDE"
-
+IMAGE_SIZE = 64
 
 def process_image_for_api(image_array, classifier_model_path):
     """
@@ -36,12 +36,20 @@ def process_image_for_api(image_array, classifier_model_path):
         - Each dict: {'image': base64_encoded_image, 'digit': int, 'confidence': float}
     """
     try:
-        # Use the refactored process_image function with return_results=True
+        # image_array is given hence input_path will be ignored.
+        # set input_path to None.
+        # return_results is True hence output_dir will be ignored.
+        # set output_dir to None.
+        # set input_size to 64 since in frontend 
+        # we are using 64x64 images ONLY
         result = process_image(
-            image_array=image_array,
+            input_path=None,
+            output_dir=None,
             classifier_model_path=classifier_model_path,
             classify_digits=True,
-            return_results=True
+            image_array=image_array,
+            return_results=True,
+            input_size=IMAGE_SIZE
         )
         return result
     except Exception as e:

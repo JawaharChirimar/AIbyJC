@@ -290,7 +290,7 @@ def create_augmented_data(augment_ratio, image_size, force, datasets):
             "emnist": {"name": "emnist_digits", "input_path": "EMNIST"},
         }
         output_path = "EMNIST"
-        dataset_name = "emnist"
+        dataset_name = "emnist_digits"
     elif datasets == 'ardis':
         train_table = {
             "ardis": {"name": "ardis", "input_path": "ardis"},

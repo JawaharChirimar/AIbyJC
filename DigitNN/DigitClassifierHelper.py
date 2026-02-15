@@ -131,11 +131,10 @@ def load_digit_classifier(classifier_model_path):
         )
         
         print("Digit classifier loaded successfully")
-        return model
     except Exception as e:
         raise ValueError(f"load_digit_classifier:Cannot load model from {classifier_model_path}: {e}. Set train_model=True to create a new model.")
 
-    return None
+    return model
 
 
 def create_logit_model(classifier_model_path, model=None):
@@ -176,7 +175,7 @@ def calibrate_energy_scorer_helper(
     load_augmented_dataX, 
     batch_size, 
     input_size,
-    model=None,):
+    model):
     """
     Load a pre-trained digit classifier and calibrate the energy scorer.
     """
@@ -184,28 +183,31 @@ def calibrate_energy_scorer_helper(
         model = load_digit_classifier(classifier_model_path)
 
     if model is None:
-        raise ValueError(f"calibrate_energy_scorer: Could not load model from {classifier_model_path}")
+        raise ValueError(f"calibrate_energy_scorer_helper: Could not load model from {classifier_model_path}")
     
     if _is_softmax_model(model):
-        raise ValueError(f"calibrate_energy_scorer: Must be a logit model, not a softmax model. {classifier_model_path}")
+        raise ValueError(f"calibrate_energy_scorer_helper: Must be a logit model, not a softmax model. {classifier_model_path}")
 
     print("Loading test data for energy scorer calibration...")
     _, _, x_test, y_test = load_augmented_dataX(image_size=input_size)
         
     if x_test is None:
-        raise ValueError(f"calibrate_energy_scorer: Failed to load test data")
+        raise ValueError(f"calibrate_energy_scorer_helper: Failed to load test data")
     else:
         # Filter to only digits (0-9), exclude non-digits (class 10)
         digit_mask = y_test < 10
         x_test_digits = x_test[digit_mask]
 
     energy_scorer = EnergyScorer(model, temperature=1.0, batch_size=batch_size)
+    
+    percentiles = [99.9, 99.5, 99, 95, 90]
+    
+    print(f"Calibrating energy scorer for percentiles: {percentiles}")
     thresholds = energy_scorer.calibrate(
         x_digits=x_test_digits, 
-        percentile=[99.9, 99.5,99, 95, 90])
+        percentile=percentiles)
     
     # Create dictionary mapping percentiles to thresholds
-    percentiles = [99.9, 99.5, 99, 95, 90]
     thresholds_dict = {str(p): float(t) for p, t in zip(percentiles, thresholds)}
     
     # Create calibration data with thresholds and timestamp
@@ -225,7 +227,7 @@ def calibrate_energy_scorer_helper(
         print(f"Energy calibration saved to {energy_file_path}")
         return True
     except Exception as e:
-        raise ValueError(f"calibrate_energy_scorer: Failed to save calibration to {energy_file_path}: {e}")
+        raise ValueError(f"calibrate_energy_scorer_helper: Failed to save calibration to {energy_file_path}: {e}")
 
 
 def load_energy_caliberation_helper(calibration_file, energy_scorer):
@@ -235,7 +237,7 @@ def load_energy_caliberation_helper(calibration_file, energy_scorer):
     if os.path.exists(calibration_file):
         print("Loading energy scorer calibration for model...")
         try:
-            energy_scorer.load_calibration(calibration_file, percentile=99.9)
+            energy_scorer.load_calibration(calibration_file, percentile=99.5)
         except Exception as e:
             raise ValueError(f"load_energy_caliberation_helper: Could not load calibration: {e}")
     else:

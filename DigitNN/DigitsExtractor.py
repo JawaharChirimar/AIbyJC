@@ -30,9 +30,7 @@ def get_classifier_module(classifier_model_path):
         Module object for the appropriate classifier
     """
     if classifier_model_path is None:
-        # Default to SoftMax11 if no path provided
-        import DigitClassifierSoftMax11
-        return DigitClassifierSoftMax11
+        raise ValueError("get_classifier_module: classifier_model_path is required")
     
     path_str = str(classifier_model_path)
     
@@ -45,9 +43,7 @@ def get_classifier_module(classifier_model_path):
         import DigitClassifierSoftMax11
         return DigitClassifierSoftMax11
     else:
-        # Default to SoftMax11 if pattern doesn't match
-        import DigitClassifierSoftMax11
-        return DigitClassifierSoftMax11
+        raise ValueError(f"get_classifier_module: Invalid classifier model path: {classifier_model_path}. Must be one of: run_MNIST*, run_EMNIST*")
 
 
 def create_output_directory():
@@ -380,10 +376,11 @@ background_mean=0, foreground_mean=255):
     return final
 
 
-
-def process_image(input_path=None, output_dir=None, 
-classifier_model_path=None, classify_digits=False, 
-image_array=None, return_results=False):
+#The following parameters can be None:
+# input_path, output_dir, classifier_model_path, image_array
+def process_image(input_path, output_dir, 
+classifier_model_path, classify_digits, 
+image_array, return_results, input_size):
     """
     Process input image with contour detection, extract digit regions, and save them or return results.
     
@@ -392,8 +389,8 @@ image_array=None, return_results=False):
         output_dir: Output directory (created with timestamp if None, required if return_results=False)
         classifier_model_path: Path to digit classifier model (required if classify_digits=True)
         classify_digits: Whether to classify digits using CNN (required if return_results=True)
-        image_array: numpy array of image in BGR format (optional, if provided, input_path is ignored)
-        return_results: If True, return list of dicts instead of saving files (default: False)
+        image_array: numpy array of image in BGR format (if provided, input_path is ignored)
+        return_results: If True, return list of dicts instead of saving files
     
     Returns:
         If return_results=True: dict with 'error' key OR 'results' key containing list of dicts:
@@ -476,7 +473,7 @@ image_array=None, return_results=False):
             try:
                 # Get the appropriate classifier module based on model path
                 classifier_module = get_classifier_module(classifier_model_path)
-                classifier_model, energy_scorer = classifier_module.load_digit_classifier_and_energy_scorer(classifier_model_path)
+                classifier_model, energy_scorer = classifier_module.load_digit_classifier_and_energy_scorer(classifier_model_path, input_size=input_size)
             except Exception as e:
                 if return_results:
                     return {'error': f'Could not load classifier model: {str(e)}'}
@@ -585,8 +582,15 @@ def main():
     if args.classify and args.classifier_model is None:
         parser.error("--classifier-model is required when --classify is used")
     
-    process_image(args.input_image, args.output, args.classifier_model, args.classify)
 
+    #process_image(input_path, output_dir, classifier_model_path, classify_digits, 
+    #image_array, return_results)
+    process_image(input_path=args.input_image, 
+    output_dir=args.output, 
+    classifier_model_path=args.classifier_model, 
+    classify_digits=args.classify,
+    image_array=None,
+    return_results=False)
 
 if __name__ == "__main__":
     main()

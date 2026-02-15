@@ -9,7 +9,12 @@ Supports both 28x28 (original) and 64x64 (upscaled with LANCZOS) versions.
 """
 
 import numpy as np
+import sys
 from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from DataManagement.DataCommon import (upscale_images_to_size, DATA_DIR)
 
 EMNIST_DIR = DATA_DIR / "EMNIST"
