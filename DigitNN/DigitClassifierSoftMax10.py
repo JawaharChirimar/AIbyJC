@@ -354,7 +354,8 @@ def train_digit_classifier(
                     var_penalty=lambda_weight,
                     digit_only_variance=True)
                 else:
-                    loss_function = 'sparse_categorical_crossentropy'
+                    loss_function = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+
                     
                 model.compile(
                     optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
