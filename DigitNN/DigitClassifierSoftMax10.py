@@ -241,9 +241,9 @@ def load_augmented_data(image_size, use_combined):
 
 
 def calibrate_energy_scorer(classifier_model_path, 
-    input_size, 
-    use_combined, 
-    model):
+                            input_size, 
+                            use_combined, 
+                            model):
     """
     Load a pre-trained digit classifier and calibrate the energy scorer.
     """
@@ -251,7 +251,7 @@ def calibrate_energy_scorer(classifier_model_path,
     def load_augmented_dataX(image_size):
         return load_augmented_data(image_size, use_combined)
 
-    print(f" For SoftMax11 model")
+    print(f" For SoftMax10 model")
     print(f"Calibrating energy scorer for model: {classifier_model_path}...")
     print(f"input_size: {input_size}")
     print(f"use_combined: {use_combined}")
@@ -275,7 +275,8 @@ input_size):
     model = load_digit_classifier(classifier_model_path)
     energy_scorer = _build_energy_model_from_path(model, 
     batch_size=BATCH_SIZE,
-    classifier_model_path, percentile=99.5)
+    classifier_model_path=classifier_model_path, 
+    percentile=99.5)
 
     return model, energy_scorer
 
@@ -415,7 +416,7 @@ def train_digit_classifier(
         print(f"Epoch models will be saved as: {run_dir}/digit_classifier_epoch_XX.keras")
         
         # Early stopping settings
-        patience = 5  # Stop if no improvement for 5 epochs
+        patience = 100  # Stop if no improvement for 100 epochs
         min_delta = 0.0001  # Minimum change to qualify as improvement
 
         # =================================================================
@@ -464,7 +465,7 @@ def train_digit_classifier(
         callbacks_list = [
             keras.callbacks.EarlyStopping(
                 monitor='val_loss',
-                patience=100, #patience,
+                patience=patience,
                 min_delta=min_delta,
                 mode='min',
                 restore_best_weights=True,

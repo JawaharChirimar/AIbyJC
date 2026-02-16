@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from DataManagement.DataCommon import (
     find_bounding_box,
-    crop_resize_with_margin
+    crop_resize_with_margin,
+    float_to_uint8,
+    MARGIN_SIZE
 )
 
 
@@ -37,10 +39,10 @@ from DataManagement.DataCommon import (
 AUGMENT_RATIO = 0.10  # 10% of each class selected for augmentation
 
 # Transform parameters
-ROTATION_RANGE_POS = (3, 30)    # degrees (positive)
-ROTATION_RANGE_NEG = (-30, -3)  # degrees (negative)
-SHEAR_RANGE_POS = (2, 16)       # degrees (positive)
-SHEAR_RANGE_NEG = (-16, -2)     # degrees (negative)
+ROTATION_RANGE_POS = (3, 15)    # degrees (positive)
+ROTATION_RANGE_NEG = (-15, -3)  # degrees (negative)
+SHEAR_RANGE_POS = (2, 10)       # degrees (positive)
+SHEAR_RANGE_NEG = (-10, -2)     # degrees (negative)
 ASPECT_WIDE_RANGE = (1.05, 1.6)   # stretch wider (max 60%)
 ASPECT_NARROW_RANGE = (0.625, 0.95) # compress narrower (max 37.5%)
 
@@ -67,7 +69,7 @@ THICK_ITERATIONS = 1
 ERASURE_PERCENT = 0.15  # 15% of white pixels erased
 
 # Stroke break parameters
-STROKE_BREAK_SIZE = 4   # 4 pixels per break
+STROKE_BREAK_SIZE = 2   # 4 pixels per break
 STROKE_BREAK_COUNT = 6  # 6 breaks scattered randomly
 
 
@@ -104,10 +106,10 @@ def apply_rotation(img_array, angle, target_size=None):
     # Calculate required size for rotation: |cos(θ)| + |sin(θ)|
     angle_rad = math.radians(abs(angle))
     required_size = original_size * (abs(math.cos(angle_rad)) + abs(math.sin(angle_rad)))
-    
-    # Add 2px padding on each side (+4px total)
-    canvas_size = max(int(math.ceil(required_size)) + 4, 2*original_size)  # Ensure canvas is large enough for all angles
-    
+
+    # Ensure canvas is large enough for all angles
+    canvas_size = max(int(2*math.ceil(required_size)), 3*target_size)
+
     # Create larger canvas and embed original image centered
     canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
     offset_y = (canvas_size - h) // 2
@@ -115,8 +117,8 @@ def apply_rotation(img_array, angle, target_size=None):
     canvas[offset_y:offset_y+h, offset_x:offset_x+w] = img_array
     
     # Convert to uint8 for cv2
-    canvas_uint8 = (canvas * 255).astype(np.uint8)
-    
+    canvas_uint8 = float_to_uint8(canvas)
+
     # Rotate on larger canvas
     center = (canvas_size // 2, canvas_size // 2)
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
@@ -171,17 +173,17 @@ def apply_shear(img_array, shear_degrees, target_size=None):
     required_width = w + extra_width
     
     # Add 2px padding on each side (+4px total)
-    canvas_size = max(required_width + 4, h + 4, 2 * original_size)  # Ensure canvas is large enough for all shears
+    canvas_size = max(2 * required_width, 3 * target_size)  # Ensure canvas is large enough for all shears
     
     # Create larger canvas and embed original image centered
     canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
     offset_y = (canvas_size - h) // 2
     offset_x = (canvas_size - w) // 2
     canvas[offset_y:offset_y+h, offset_x:offset_x+w] = img_array
-    
+
     # Convert to uint8 for cv2
-    canvas_uint8 = (canvas * 255).astype(np.uint8)
-    
+    canvas_uint8 = float_to_uint8(canvas)
+
     # Shear on larger canvas
     center_x = canvas_size // 2
     center_y = canvas_size // 2
@@ -229,30 +231,46 @@ def apply_aspect_ratio(img_array, aspect_factor, target_size=None):
     if target_size is None:
         target_size = original_size
 
-    # Step 1: Apply aspect ratio transformation to the image itself
-    new_width = int(w * aspect_factor)
-    img_uint8 = (img_array * 255).astype(np.uint8)
+    # Convert to uint8 and PIL
+    img_uint8 = float_to_uint8(img_array)
     img_pil = Image.fromarray(img_uint8)
 
-    # Resize image: width changes by aspect_factor, height stays same
-    transformed_pil = img_pil.resize((new_width, h), Image.Resampling.LANCZOS)
+    # Step 1: Find bounding box of the digit in original image
+    bbox = find_bounding_box(img_pil)
 
-    # Step 2: Create square canvas large enough to hold transformed image
-    canvas_size = max(new_width + 4, h + 4, 2 * original_size)
+    if bbox is None:
+        # No content, return black image
+        result = np.zeros((target_size, target_size), dtype=np.float32)
+        if squeeze:
+            result = np.expand_dims(result, -1)
+        return result
 
-    # Step 3: Embed transformed image on canvas (centered)
+    x_min, y_min, x_max, y_max = bbox
+
+    # Step 2: Crop to bounding box (add +1 to include pixels at x_max, y_max)
+    digit_cropped = img_pil.crop((x_min, y_min, x_max+1, y_max+1))
+    digit_w, digit_h = digit_cropped.size  # PIL returns (width, height)
+
+    # Step 3: Apply aspect ratio transformation to the cropped digit
+    new_width = int(digit_w * aspect_factor)
+    transformed_digit = digit_cropped.resize((new_width, digit_h), Image.Resampling.LANCZOS)
+
+    # Step 4: Create canvas large enough to hold transformed digit
+    canvas_size = max(3 * new_width, 3 * digit_h, 2 * target_size)
     canvas = np.zeros((canvas_size, canvas_size), dtype=np.uint8)
-    transformed_array = np.array(transformed_pil)
-    offset_y = (canvas_size - h) // 2
-    offset_x = (canvas_size - new_width) // 2
-    canvas[offset_y:offset_y+h, offset_x:offset_x+new_width] = transformed_array
 
-    # Step 4: Find bounding box and crop with margin
+    # Step 5: Embed transformed digit on canvas (centered)
+    transformed_array = np.array(transformed_digit)
+    offset_y = (canvas_size - digit_h) // 2
+    offset_x = (canvas_size - new_width) // 2
+    canvas[offset_y:offset_y+digit_h, offset_x:offset_x+new_width] = transformed_array
+
+    # Step 6: Find bounding box of transformed digit and crop with margin
     canvas_pil = Image.fromarray(canvas)
-    bbox = find_bounding_box(canvas_pil)
-    result_pil = crop_resize_with_margin(canvas_pil, 
+    new_bbox = find_bounding_box(canvas_pil)
+    result_pil = crop_resize_with_margin(canvas_pil,
                                          target_size=target_size,
-                                         bbox=bbox)
+                                         bbox=new_bbox)
 
     # Back to numpy float
     result_array = np.array(result_pil).astype(np.float32) / 255.0
@@ -278,9 +296,9 @@ def apply_blur(img_array, radius=1.0):
     if img_array.ndim == 3 and img_array.shape[-1] == 1:
         img_array = img_array.squeeze(-1)
         squeeze = True
-    
+
     # Convert to PIL
-    img_uint8 = (img_array * 255).astype(np.uint8)
+    img_uint8 = float_to_uint8(img_array)
     pil_img = Image.fromarray(img_uint8)
     
     # Apply blur
@@ -309,10 +327,10 @@ def apply_thinning(img_array):
     if img_array.ndim == 3 and img_array.shape[-1] == 1:
         img_array = img_array.squeeze(-1)
         squeeze = True
-    
+
     # Convert to uint8
-    img_uint8 = (img_array * 255).astype(np.uint8)
-    
+    img_uint8 = float_to_uint8(img_array)
+
     # Erode
     eroded = cv2.erode(img_uint8, THIN_KERNEL, iterations=THIN_ITERATIONS)
     
@@ -357,7 +375,7 @@ def apply_thickening(img_array, target_size=None):
     canvas[offset_y:offset_y+h, offset_x:offset_x+w] = img_array
 
     # Convert to uint8
-    canvas_uint8 = (canvas * 255).astype(np.uint8)
+    canvas_uint8 = float_to_uint8(canvas)
 
     # Dilate on canvas
     dilated = cv2.dilate(canvas_uint8, THICK_KERNEL, iterations=THICK_ITERATIONS)

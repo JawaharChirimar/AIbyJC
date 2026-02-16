@@ -277,19 +277,19 @@ def classify_digit(classifier_model, energy_scorer, digit_image, input_size=28):
     # Get predicted class (0-10)
     predicted_class = int(np.argmax(predictions[0]))
     confidence = float(predictions[0][predicted_class])
-    print(f"Predicted class: {predicted_class}, Confidence: {confidence}")
+    #print(f"Predicted class: {predicted_class}, Confidence: {confidence}")
 
     score = energy_scorer.score(digit_input)
-    print(f"Energy score: {score}")
+    #print(f"Energy score: {score}")
 
     is_ood = energy_scorer.is_ood(digit_input)
     if is_ood:
         # Energy indicates OOD - even if classifier predicted a digit
         predicted_class = 11
         confidence = -1.0  # OOD detection, no confidence score
-        print(f"  Energy-based OOD detection: Overriding to class 11 (non-digit)")
-    else:
-        print(f"  Energy-based OOD detection: Predicted class {predicted_class} is not OOD")
-    
+        #print(f"  Energy-based OOD detection: Overriding to class 11 (non-digit)")
+    #else:
+        #print(f"  Energy-based OOD detection: Predicted class {predicted_class} is not OOD")
+
     # Return the predicted class (0-9 for digits, 10 for non-digit, 11 for OOD)
     return predicted_class, confidence, score

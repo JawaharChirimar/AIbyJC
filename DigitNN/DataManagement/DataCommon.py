@@ -8,30 +8,49 @@ if "ubuntu" in str(HOME_PATH).lower():
 else:
     DATA_DIR = Path.home() / "Development" / "AIbyJC" / "DigitNN" / "data"
 
-MARGIN_SIZE = 2  # Margin in pixels for cropping/resizing
+MARGIN_SIZE = 4  # Margin in pixels for cropping/resizing
+
+
+def float_to_uint8(img_array):
+    """
+    Convert float32 image array [0, 1] to uint8 [0, 255] with proper rounding.
+
+    Args:
+        img_array: numpy array with float values in [0, 1]
+
+    Returns:
+        numpy array with uint8 values in [0, 255]
+    """
+    return np.clip(img_array * 255.0, 0, 255).round().astype(np.uint8)
 
 
 def upscale_images_to_size(images, target_size):
     """
-    Upscale batch of images to target_size x target_size using LANCZOS.
-    
+    Upscale batch of images to target_size x target_size with proper centering.
+
+    Finds bounding box of each digit, crops, and resizes with proper margins
+    to ensure digits are centered and not cut off.
+
     Args:
         images: numpy array (N, H, W) uint8
         target_size: Target size (28 or 64)
-    
+
     Returns:
         numpy array (N, target_size, target_size) uint8
     """
     upscaled = []
+    ctr=0
     for img in images:
         pil_img = Image.fromarray(img)
-        upscaled_img = pil_img.resize((target_size, target_size), Image.Resampling.LANCZOS)
-        upscaled.append(np.array(upscaled_img))
+        # Use crop_resize_with_margin to properly center and add margins
+        centered_img = crop_resize_with_margin(pil_img, target_size, idx=None)
+        upscaled.append(np.array(centered_img))
+        ctr+=1
 
     return np.array(upscaled, dtype=np.uint8)
 
 
-def find_bounding_box(img):
+def find_bounding_box(img,idx=None):
     """
     Find bounding box of non-zero pixels in image.
     
@@ -49,11 +68,28 @@ def find_bounding_box(img):
     
     y_min, x_min = coords.min(axis=0)
     y_max, x_max = coords.max(axis=0)
-    
-    return (x_min, y_min, x_max + 1, y_max + 1)
+
+    coords_orig = np.column_stack(np.where(img_array >= 0))
+    y0_min, x0_min = coords_orig.min(axis=0)
+    y0_max, x0_max = coords_orig.max(axis=0)
+
+    BUFFER = min(x_min-x0_min, y_min-y0_min, x0_max-x_max, y0_max-y_max)
+    BUFFER = min(BUFFER, 2)
+
+    if idx is not None and idx==20301:
+        print(f"BB:Original bbox for idx {idx}: ({x_min}, {y_min}, {x_max}, {y_max})")
+        print(f"BB:Image size: {img.size}")
+        img.save(f"data/MNIST/debug_bbox_20301.png")
+
+    x_min = max(x_min - BUFFER, x0_min)
+    y_min = max(y_min - BUFFER, y0_min)
+    x_max = min(x_max + BUFFER, x0_max)
+    y_max = min(y_max + BUFFER, y0_max)
+
+    return (x_min, y_min, x_max, y_max)
 
 
-def crop_resize_with_margin(img, target_size, bbox=None):
+def crop_resize_with_margin(img, target_size, bbox=None, idx=None):
     """
     Crop digit to bounding box, resize to MAXIMIZE digit size while keeping margin,
     and paste into target_size image with exactly margin pixels on all sides.
@@ -76,16 +112,24 @@ def crop_resize_with_margin(img, target_size, bbox=None):
 
     # Use provided bbox or find it
     if bbox is None:
-        bbox = find_bounding_box(img)
+        bbox = find_bounding_box(img, idx=idx)
 
     if bbox is None:
         # No content, return black image of target size
         return Image.new('L', (target_size, target_size), color=0)
     
     x_min, y_min, x_max, y_max = bbox
+
+    if idx is not None and idx==20301:
+        print(f"CR: Original bbox for idx {idx}: ({x_min}, {y_min}, {x_max}, {y_max})")
     
     # Crop to bounding box (no margin yet)
-    cropped = img.crop((x_min, y_min, x_max, y_max))
+    # Note: crop box is (left, upper, right, lower) and right/lower are exclusive, so add 1 to include max pixel
+    cropped = img.crop((x_min, y_min, x_max+1, y_max+1))
+    
+    if idx is not None and idx==20301:
+        cropped.save(f"data/MNIST/debug_cropped_bbox_20301.png")
+
     crop_width = x_max - x_min
     crop_height = y_max - y_min
     
@@ -95,6 +139,7 @@ def crop_resize_with_margin(img, target_size, bbox=None):
     # Scale to maximize digit - use the larger dimension to determine scale
     # This ensures the digit fills as much space as possible while maintaining aspect ratio
     scale = digit_size / max(crop_width, crop_height)
+    scale = scale*1.0
     new_width = int(crop_width * scale)
     new_height = int(crop_height * scale)
     
@@ -105,8 +150,8 @@ def crop_resize_with_margin(img, target_size, bbox=None):
     result = Image.new('L', (target_size, target_size), color=0)
     
     # Paste resized digit centered in the available area (with margin)
-    paste_x = margin + (digit_size - new_width) // 2
-    paste_y = margin + (digit_size - new_height) // 2
+    paste_x = margin + (digit_size - new_width + 1) // 2
+    paste_y = margin + (digit_size - new_height + 1) // 2
     result.paste(resized, (paste_x, paste_y))
     
     return result

@@ -51,10 +51,6 @@ from DataManagement.DataCommon import (
 )
 
 from DataManagement.DataAugmentation import (
-    ROTATION_RANGE_POS, 
-    ROTATION_RANGE_NEG,
-    SHEAR_RANGE_POS, 
-    SHEAR_RANGE_NEG,
     ERASURE_PERCENT,
     STROKE_BREAK_SIZE,
     STROKE_BREAK_COUNT,
@@ -69,6 +65,10 @@ from DataManagement.DataAugmentation import (
     apply_thickening as apply_thickening_np
 )
 
+ROTATION_RANGE_POS = (3, 30)    # degrees (positive)
+ROTATION_RANGE_NEG = (-30, -3)  # degrees (negative)
+SHEAR_RANGE_POS = (2, 16)       # degrees (positive)
+SHEAR_RANGE_NEG = (-16, -2)     # degrees (negative)
 
 # =============================================================================
 # CONFIGURATION

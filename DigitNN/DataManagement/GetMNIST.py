@@ -9,6 +9,11 @@ Uses TensorFlow/Keras to load the original 28x28, then upscales with LANCZOS.
 import numpy as np
 from pathlib import Path
 from PIL import Image
+import sys
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from DataManagement.DataCommon import (upscale_images_to_size, DATA_DIR)
 
 MNIST_DIR = DATA_DIR / "MNIST"
