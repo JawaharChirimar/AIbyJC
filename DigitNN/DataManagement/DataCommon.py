@@ -144,7 +144,8 @@ def crop_resize_with_margin(img, target_size, bbox=None, idx=None):
     new_height = int(crop_height * scale)
     
     # Resize maintaining aspect ratio
-    resized = cropped.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    #resized = cropped.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    resized = cropped.resize((new_width, new_height), Image.Resampling.BILINEAR)
     
     # Create final image with target_size x target_size (black background)
     result = Image.new('L', (target_size, target_size), color=0)

@@ -253,7 +253,8 @@ def apply_aspect_ratio(img_array, aspect_factor, target_size=None):
 
     # Step 3: Apply aspect ratio transformation to the cropped digit
     new_width = int(digit_w * aspect_factor)
-    transformed_digit = digit_cropped.resize((new_width, digit_h), Image.Resampling.LANCZOS)
+    #transformed_digit = digit_cropped.resize((new_width, digit_h), Image.Resampling.LANCZOS)
+    transformed_digit = digit_cropped.resize((new_width, digit_h), Image.Resampling.BILINEAR)
 
     # Step 4: Create canvas large enough to hold transformed digit
     canvas_size = max(3 * new_width, 3 * digit_h, 2 * target_size)
