@@ -5,7 +5,7 @@ GetEMNIST.py
 Functions to load EMNIST dataset using the emnist package.
 The emnist package handles downloading, caching, and correct image orientation.
 
-Supports both 28x28 (original) and 64x64 (upscaled with LANCZOS) versions.
+Supports both 28x28 (original) and 64x64 (upscaled) versions.
 """
 
 import numpy as np
@@ -128,9 +128,9 @@ def load_emnist_size(split='digits', target_size=28, force_regenerate=False):
         x_test_scaled = x_test
     else:
         # Process (upscale or downscale) to target size
-        print(f"  Processing training set from {current_size}x{current_size} to {target_size}x{target_size} with LANCZOS...")
+        print(f"  Processing training set from {current_size}x{current_size} to {target_size}x{target_size} with BILINEAR...")
         x_train_scaled = upscale_images_to_size(x_train, target_size)
-        print(f"  Processing test set from {current_size}x{current_size} to {target_size}x{target_size} with LANCZOS...")
+        print(f"  Processing test set from {current_size}x{current_size} to {target_size}x{target_size} with BILINEAR...")
         x_test_scaled = upscale_images_to_size(x_test, target_size)
         
     # Save files (images once, both label formats)
@@ -197,7 +197,7 @@ def load_emnist_letters_size(target_size=28, force=False):
         x_train_scaled = x_train
     else:
         # Process (upscale or downscale) to target size
-        print(f"  Processing letters from {current_size}x{current_size} to {target_size}x{target_size} with LANCZOS...")
+        print(f"  Processing letters from {current_size}x{current_size} to {target_size}x{target_size} with BILINEAR...")
         x_train_scaled = upscale_images_to_size(x_train, target_size)
     
     # Save

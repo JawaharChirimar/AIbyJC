@@ -5,7 +5,7 @@ GetArdis.py
 Functions to load and process the ARDIS dataset (Arkiv Digital Sweden handwritten digits).
 ARDIS contains ~7,600 digit images from Swedish church records (1895-1970).
 
-Supports both 28x28 (original) and 64x64 (upscaled with LANCZOS) versions.
+Supports both 28x28 (original) and 64x64 (upscaled with BILINEAR) versions.
 """
 
 from pathlib import Path
@@ -145,10 +145,10 @@ def load_ardis_dataset():
 
 def load_ardis_size(target_size=28, force_regenerate=False):
     """
-    Load ARDIS dataset upscaled to target_size x target_size using LANCZOS.
+    Load ARDIS dataset upscaled to target_size x target_size.
     
     First checks for cached version. If not found, loads original 28x28,
-    upscales with LANCZOS, and saves for future use.
+    upscales with BILINEAR, and saves for future use.
     
     Saves train/test files with softmax format labels (images stored once).
     

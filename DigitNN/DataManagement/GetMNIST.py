@@ -3,7 +3,7 @@
 GetMNIST.py
 
 Functions to load MNIST dataset with support for 64x64 upscaling.
-Uses TensorFlow/Keras to load the original 28x28, then upscales with LANCZOS.
+Uses TensorFlow/Keras to load the original 28x28, then upscales with BILINEAR.
 """
 
 import numpy as np

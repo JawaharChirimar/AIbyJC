@@ -5,7 +5,7 @@ GetUSPS.py
 Functions to load and process the USPS dataset (US Postal Service handwritten digits).
 USPS contains 9,298 digit images (original size: 16x16).
 
-Supports both 28x28 (default) and 64x64 (upscaled from 16x16 with LANCZOS interpolation).
+Supports both 28x28 (default) and 64x64 (upscaled from 16x16 with BILINEAR interpolation).
 """
 
 import bz2
@@ -108,8 +108,8 @@ def load_usps_size(target_size=28, force_regenerate=False):
     Load USPS dataset at target_size x target_size.
     
     First checks for cached version. If not found, loads original 16x16,
-    upscales with LANCZOS if needed, and saves for future use.
-    
+    upscales with BILINEAR if needed, and saves for future use.
+
     Args:
         target_size: Target size (28 or 64, default: 28)
         force_regenerate: If True, regenerate even if cached version exists
